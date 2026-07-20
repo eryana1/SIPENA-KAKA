@@ -58,7 +58,7 @@ const generateWithRetry = async (
   delay = 1000
 ) => {
   // Only use valid, non-deprecated models from the gemini-api skill list.
-  const modelsToTry = [preferredModel, "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
+  const modelsToTry = [preferredModel, "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
   const uniqueModels = Array.from(new Set(modelsToTry));
   let lastError: any = null;
 
@@ -75,17 +75,38 @@ const generateWithRetry = async (
         return result;
       } catch (error: any) {
         lastError = error;
-        const status = error.status || error.statusCode || error.code || 500;
-        const errorMsg = error.message || String(error);
-        console.log(`[AI] Model ${model} failed on attempt ${attempt}:`, errorMsg);
+        let status = error.status || error.statusCode || error.code || 500;
+        let errorMsg = error.message || String(error);
+
+        // Try to parse JSON error message if it's formatted as a stringified object from the API
+        try {
+          if (typeof errorMsg === "string" && errorMsg.trim().startsWith("{") && errorMsg.trim().endsWith("}")) {
+            const parsed = JSON.parse(errorMsg);
+            if (parsed.error) {
+              status = parsed.error.code || status;
+              errorMsg = parsed.error.message || errorMsg;
+            }
+          }
+        } catch (e) {
+          // Fall back to original properties if JSON parsing fails
+        }
+
+        console.log(`[AI] Model ${model} returned code ${status} (Attempt ${attempt}/${retries}):`, errorMsg);
 
         // If it's an auth error (401, 403), do not retry as it is a permanent auth failure across all models
         if (status === 401 || status === 403 || errorMsg.includes("API key not valid") || errorMsg.includes("api_key_invalid")) {
           throw error;
         }
 
-        // If it's a configuration error (400), rate limit (429), or service unavailable (503), do not retry on this model. Break the inner loop to try the next candidate model immediately.
-        const isRateLimitOrUnavailable = 
+        // If it's a configuration error (400), do not retry on this model. Break the inner loop to try the next candidate model immediately.
+        if (status === 400) {
+          console.log(`[AI] Model ${model} bad request (${status}). Switching to next candidate model immediately.`);
+          break; 
+        }
+
+        // For resource exhaustion, quota, rate limit, or high demand service unavailable (503),
+        // we should skip to the next model immediately to ensure a seamless and fast fallback.
+        const isQuotaOrOverload = 
           status === 429 || 
           status === 503 || 
           errorMsg.includes("RESOURCE_EXHAUSTED") || 
@@ -96,17 +117,18 @@ const generateWithRetry = async (
           errorMsg.includes("high demand") || 
           errorMsg.includes("temporary");
 
-        if (status === 400 || isRateLimitOrUnavailable) {
-          console.log(`[AI] Model ${model} failed with status ${status} / error. Skipping to next model immediately.`);
-          break; 
+        if (isQuotaOrOverload) {
+          console.log(`[AI] Model ${model} is temporarily busy or rate-limited (${status}). Switching to next candidate model immediately.`);
+          break;
         }
 
+        // For other general/transient errors, retry on the same model with exponential backoff
         if (attempt < retries) {
           const sleepTime = delay * Math.pow(2, attempt - 1);
-          console.log(`[AI] Model ${model} failed with code ${status} (Attempt ${attempt}/${retries}). Retrying in ${sleepTime}ms...`);
+          console.log(`[AI] Model ${model} status: retry same model in ${sleepTime}ms...`);
           await new Promise((resolve) => setTimeout(resolve, sleepTime));
         } else {
-          console.log(`[AI] Model ${model} failed all ${retries} attempts. Trying the next model candidate.`);
+          console.log(`[AI] Model ${model} exhausted attempts. Switching to next candidate model.`);
         }
       }
     }
