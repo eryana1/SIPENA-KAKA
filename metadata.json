@@ -1,0 +1,6 @@
+{
+  "name": "SIPENA KAKA",
+  "description": "Sistem Perencanaan Pembelajaran Berbasis Kearifan Lokal dan Kecerdasan Artifisial. Asisten AI Guru untuk menyusun seluruh perangkat pembelajaran Kurikulum Merdeka (TP, ATP, PROTA, PROSEM, RPP) secara otomatis dan terintegrasi dengan Google Drive.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

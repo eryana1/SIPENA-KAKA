@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+@media print {
+  /* Enforce landscape orientation for printing */
+  @page {
+    size: landscape;
+    margin: 1cm;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  /* Expand the main scrolling container to print perfectly */
+  main {
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  /* Make sure tables take full print area */
+  table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+  }
+
+  /* Avoid cutting table rows across pages if possible */
+  tr {
+    page-break-inside: avoid !important;
+  }
+}
