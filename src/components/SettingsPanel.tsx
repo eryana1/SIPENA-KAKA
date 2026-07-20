@@ -40,6 +40,7 @@ export default function SettingsPanel({
   const [localKey, setLocalKey] = useState(apiKey || "");
   const [checkingApi, setCheckingApi] = useState(false);
   const [apiStatus, setApiStatus] = useState<"unchecked" | "valid" | "invalid">("unchecked");
+  const [apiError, setApiError] = useState<string>("");
   
   const [provisioningDrive, setProvisioningDrive] = useState(false);
   const [driveStatusMsg, setDriveStatusMsg] = useState("");
@@ -56,6 +57,7 @@ export default function SettingsPanel({
   const handleCheckApi = async () => {
     setCheckingApi(true);
     setApiStatus("unchecked");
+    setApiError("");
     try {
       // Test proxy generate endpoint
       const response = await fetch("/api/generate", {
@@ -66,14 +68,16 @@ export default function SettingsPanel({
           apiKey: localKey || undefined
         })
       });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({ error: "Format respons server tidak valid." }));
       if (response.ok && data.text) {
         setApiStatus("valid");
       } else {
         setApiStatus("invalid");
+        setApiError(data.error || "Kunci API tidak diterima oleh model AI.");
       }
-    } catch (err) {
+    } catch (err: any) {
       setApiStatus("invalid");
+      setApiError(err.message || "Gagal menghubungi server backend.");
     } finally {
       setCheckingApi(false);
     }
@@ -155,7 +159,7 @@ export default function SettingsPanel({
                 type="password"
                 value={localKey}
                 onChange={(e) => setLocalKey(e.target.value)}
-                placeholder="Masukkan Kunci API Gemini Anda (misal: AIzaSy...)"
+                placeholder="Masukkan Kunci API Gemini Anda (misal: AIzaSy... atau AQ...)"
                 className="flex-1 p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#005A9E]"
               />
               <motion.button
@@ -186,8 +190,16 @@ export default function SettingsPanel({
               </span>
             )}
             {apiStatus === "invalid" && (
-              <span className="text-red-600 text-xs font-semibold flex items-center gap-1 bg-red-50 px-2 py-1 rounded border border-red-100">
-                <AlertCircle className="w-4 h-4" /> Kunci API Tidak Valid / Jaringan Terputus.
+              <span className="text-red-600 text-xs font-semibold flex flex-col items-start gap-1 bg-red-50 p-2 rounded border border-red-100 max-w-full">
+                <div className="flex items-center gap-1">
+                  <AlertCircle className="w-4 h-4 shrink-0" /> 
+                  <span>Kunci API Tidak Valid / Jaringan Terputus.</span>
+                </div>
+                {apiError && (
+                  <span className="text-[10px] text-red-500 font-mono mt-1 break-all bg-red-100/40 px-1.5 py-0.5 rounded border border-red-200/50">
+                    Detail Error: {apiError}
+                  </span>
+                )}
               </span>
             )}
           </div>
