@@ -510,6 +510,29 @@ export default function App() {
           prota = await getDocumentFromDb(user.uid, "academic_data", altDocId);
         }
       }
+
+      if (!prota) {
+        const FASE_CLASSES: { [key: string]: string[] } = {
+          A: ["1", "2", "I", "II"],
+          B: ["3", "4", "III", "IV"],
+          C: ["5", "6", "V", "VI"],
+          D: ["7", "8", "9", "VII", "VIII", "IX"],
+          E: ["10", "X"],
+          F: ["11", "12", "XI", "XII"]
+        };
+        const candidateClasses = FASE_CLASSES[ctx.fase] || ["1", "2", "Fase"];
+        for (const k of candidateClasses) {
+          const fDocId = getContextDocId("prota", activeProfile, ctx.mapel, k, ctx.fase);
+          prota = await getDocumentFromDb(user.uid, "academic_data", fDocId);
+          if (prota) break;
+        }
+      }
+
+      if (!prota) {
+        const faseDocId = getContextDocId("prota", activeProfile, ctx.mapel, "Fase", ctx.fase);
+        prota = await getDocumentFromDb(user.uid, "academic_data", faseDocId);
+      }
+
       setProtaData(prota ? (prota as PROTAData) : null);
     } catch (err) {
       console.error("Error loading PROTA:", err);
@@ -544,6 +567,29 @@ export default function App() {
           prosem = await getDocumentFromDb(user.uid, "academic_data", altDocId);
         }
       }
+
+      if (!prosem) {
+        const FASE_CLASSES: { [key: string]: string[] } = {
+          A: ["1", "2", "I", "II"],
+          B: ["3", "4", "III", "IV"],
+          C: ["5", "6", "V", "VI"],
+          D: ["7", "8", "9", "VII", "VIII", "IX"],
+          E: ["10", "X"],
+          F: ["11", "12", "XI", "XII"]
+        };
+        const candidateClasses = FASE_CLASSES[ctx.fase] || ["1", "2", "Fase"];
+        for (const k of candidateClasses) {
+          const fDocId = getContextDocId("prosem", activeProfile, ctx.mapel, k, ctx.fase);
+          prosem = await getDocumentFromDb(user.uid, "academic_data", fDocId);
+          if (prosem) break;
+        }
+      }
+
+      if (!prosem) {
+        const faseDocId = getContextDocId("prosem", activeProfile, ctx.mapel, "Fase", ctx.fase);
+        prosem = await getDocumentFromDb(user.uid, "academic_data", faseDocId);
+      }
+
       setProsemData(prosem ? (prosem as PROSEMData) : null);
     } catch (err) {
       console.error("Error loading PROSEM:", err);

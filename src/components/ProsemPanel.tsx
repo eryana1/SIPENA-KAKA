@@ -47,6 +47,21 @@ const isSameKelas = (k1: string, k2: string): boolean => {
   return norm(String(k1)) === norm(String(k2));
 };
 
+const isClassInSameFase = (k1: string, k2: string, currentFase: Fase): boolean => {
+  if (!k1 || !k2 || k1 === "Fase" || k2 === "Fase") return true;
+  if (isSameKelas(k1, k2)) return true;
+  const FASE_CLASSES: { [key: string]: string[] } = {
+    A: ["1", "2", "I", "II"],
+    B: ["3", "4", "III", "IV"],
+    C: ["5", "6", "V", "VI"],
+    D: ["7", "8", "9", "VII", "VIII", "IX"],
+    E: ["10", "X"],
+    F: ["11", "12", "XI", "XII"]
+  };
+  const validClasses = FASE_CLASSES[currentFase] || [];
+  return validClasses.some(c => isSameKelas(c, k1)) && validClasses.some(c => isSameKelas(c, k2));
+};
+
 const getDefaultKelasForFase = (currentFase: Fase) => {
   switch (currentFase) {
     case Fase.A: return "1";
@@ -230,7 +245,7 @@ export default function ProsemPanel({
         const activeAtps = savedAtps.filter(atp => {
           if (atp.mapel?.toLowerCase().trim() !== targetMapel) return false;
           const atpKelas = atp.kelas || getDefaultKelasForFase(fase);
-          return isSameKelas(atpKelas, kelas);
+          return isClassInSameFase(atpKelas, kelas, fase);
         });
         if (activeAtps.length > 0) {
           const fallbackItems: PROSEMItem[] = activeAtps.map((atp, idx) => ({
@@ -287,7 +302,7 @@ export default function ProsemPanel({
       const activeAtps = savedAtps.filter(atp => {
         if (atp.mapel?.toLowerCase().trim() !== targetMapel) return false;
         const atpKelas = atp.kelas || getDefaultKelasForFase(fase);
-        return isSameKelas(atpKelas, kelas);
+        return isClassInSameFase(atpKelas, kelas, fase);
       });
       if (activeAtps.length === 0) {
         alert(`Belum ada data PROTA atau ATP Kelas ${kelas} untuk mata pelajaran ${mapel}. Silakan selesaikan penyusunan ATP terlebih dahulu.`);
@@ -481,7 +496,7 @@ export default function ProsemPanel({
         const activeAtps = savedAtps.filter(atp => {
           if (atp.mapel?.toLowerCase().trim() !== targetMapel) return false;
           const atpKelas = atp.kelas || getDefaultKelasForFase(fase);
-          return isSameKelas(atpKelas, kelas);
+          return isClassInSameFase(atpKelas, kelas, fase);
         });
         if (activeAtps.length === 0) {
           alert(`Belum ada data Tujuan Pembelajaran (TP) Kelas ${kelas} untuk mata pelajaran ${mapel}. Silakan kunjungi menu Tujuan Pembelajaran atau Alur Tujuan Pembelajaran terlebih dahulu.`);

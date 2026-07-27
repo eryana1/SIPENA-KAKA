@@ -417,9 +417,12 @@ export const generateTPDocx = async (profile: any, mapel: string, items: any[], 
   const tableRows = [
     new TableRow({
       children: [
-        createCell("NO", true, AlignmentType.CENTER, 6, "F0F4F8"),
-        createCell("ELEMEN & CAPAIAN PEMBELAJARAN (CP)", true, AlignmentType.CENTER, 34, "F0F4F8"),
-        createCell("DAFTAR RINCIAN TUJUAN PEMBELAJARAN (TP)", true, AlignmentType.CENTER, 60, "F0F4F8"),
+        createCell("NO", true, AlignmentType.CENTER, 5, "F0F4F8"),
+        createCell("ELEMEN", true, AlignmentType.CENTER, 15, "F0F4F8"),
+        createCell("CAPAIAN PEMBELAJARAN (CP)", true, AlignmentType.CENTER, 25, "F0F4F8"),
+        createCell("KOMPETENSI", true, AlignmentType.CENTER, 15, "F0F4F8"),
+        createCell("KONTEN / MATERI", true, AlignmentType.CENTER, 15, "F0F4F8"),
+        createCell("RUMUSAN TUJUAN PEMBELAJARAN (TP)", true, AlignmentType.CENTER, 25, "F0F4F8"),
       ],
     }),
   ];
@@ -442,126 +445,21 @@ export const generateTPDocx = async (profile: any, mapel: string, items: any[], 
   const groupedList = Object.values(groupedItems);
 
   groupedList.forEach((group, index) => {
-    // Construct paragraphs for the TP List cell
-    const tpParagraphs: Paragraph[] = [];
     group.items.forEach((tpItem, tpIdx) => {
-      if (tpIdx > 0) {
-        tpParagraphs.push(
-          new Paragraph({
-            spacing: { before: 80, after: 80 },
-            children: [
-              new TextRun({
-                text: "────────────────────────────────────────",
-                color: "E2E8F0",
-                size: 14,
-                font: "Inter",
-              }),
-            ],
-          })
-        );
-      }
-
-      tpParagraphs.push(
-        new Paragraph({
-          alignment: AlignmentType.LEFT,
-          spacing: { before: 40, after: 20 },
+      const isFirst = tpIdx === 0;
+      tableRows.push(
+        new TableRow({
           children: [
-            new TextRun({
-              text: `${tpIdx + 1}. `,
-              bold: true,
-              font: "Inter",
-              size: 20,
-            }),
-            new TextRun({
-              text: tpItem.tujuanPembelajaran || "-",
-              font: "Inter",
-              size: 20,
-            }),
-          ],
-        })
-      );
-
-      tpParagraphs.push(
-        new Paragraph({
-          alignment: AlignmentType.LEFT,
-          spacing: { before: 20, after: 40 },
-          indent: { left: 240 },
-          children: [
-            new TextRun({
-              text: "Kompetensi: ",
-              bold: true,
-              font: "Inter",
-              size: 18,
-              color: "64748B",
-            }),
-            new TextRun({
-              text: `${tpItem.kompetensi || "-"}   |   `,
-              font: "Inter",
-              size: 18,
-              color: "334155",
-            }),
-            new TextRun({
-              text: "Konten: ",
-              bold: true,
-              font: "Inter",
-              size: 18,
-              color: "64748B",
-            }),
-            new TextRun({
-              text: tpItem.konten || "-",
-              font: "Inter",
-              size: 18,
-              color: "334155",
-            }),
+            createCell(isFirst ? (index + 1).toString() : "", false, AlignmentType.CENTER, 5),
+            createCell(isFirst ? group.elemen : "", true, AlignmentType.LEFT, 15),
+            createCell(isFirst ? group.cp : "", false, AlignmentType.LEFT, 25),
+            createCell(tpItem.kompetensi || "-", false, AlignmentType.LEFT, 15),
+            createCell(tpItem.konten || "-", false, AlignmentType.LEFT, 15),
+            createCell(`${tpIdx + 1}. ${tpItem.tujuanPembelajaran || "-"}`, false, AlignmentType.LEFT, 25),
           ],
         })
       );
     });
-
-    tableRows.push(
-      new TableRow({
-        children: [
-          createCell((index + 1).toString(), false, AlignmentType.CENTER, 6),
-          new TableCell({
-            width: { size: 34, type: WidthType.PERCENTAGE },
-            borders: standardBorders,
-            verticalAlign: VerticalAlign.TOP,
-            children: [
-              new Paragraph({
-                alignment: AlignmentType.LEFT,
-                spacing: { before: 60, after: 40 },
-                children: [
-                  new TextRun({
-                    text: group.elemen ? `Elemen: ${group.elemen}` : "Elemen: Umum",
-                    bold: true,
-                    font: "Inter",
-                    size: 20,
-                    color: "2563EB",
-                  }),
-                ],
-              }),
-              new Paragraph({
-                alignment: AlignmentType.LEFT,
-                spacing: { before: 20, after: 60 },
-                children: [
-                  new TextRun({
-                    text: group.cp || "-",
-                    font: "Inter",
-                    size: 20,
-                  }),
-                ],
-              }),
-            ],
-          }),
-          new TableCell({
-            width: { size: 60, type: WidthType.PERCENTAGE },
-            borders: standardBorders,
-            verticalAlign: VerticalAlign.TOP,
-            children: tpParagraphs,
-          }),
-        ],
-      })
-    );
   });
 
   const doc = new Document({

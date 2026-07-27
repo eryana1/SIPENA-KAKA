@@ -86,6 +86,21 @@ const isSameKelas = (k1: string, k2: string): boolean => {
   return norm(String(k1)) === norm(String(k2));
 };
 
+const isClassInSameFase = (k1: string, k2: string, faseVal: string) => {
+  if (!k1 || !k2 || k1 === "Fase" || k2 === "Fase") return true;
+  if (isSameKelas(k1, k2)) return true;
+  const FASE_CLASSES_EXT: { [key: string]: string[] } = {
+    A: ["1", "2", "I", "II"],
+    B: ["3", "4", "III", "IV"],
+    C: ["5", "6", "V", "VI"],
+    D: ["7", "8", "9", "VII", "VIII", "IX"],
+    E: ["10", "X"],
+    F: ["11", "12", "XI", "XII"]
+  };
+  const validClasses = FASE_CLASSES_EXT[faseVal] || [];
+  return validClasses.some(c => isSameKelas(c, k1)) && validClasses.some(c => isSameKelas(c, k2));
+};
+
 export default function RppPanel({
   profile,
   rppDataList,
@@ -164,18 +179,28 @@ export default function RppPanel({
   });
 
   const filteredTps = savedTps.filter(t => 
-    t.mapel?.toLowerCase() === mapel.toLowerCase()
+    t.mapel?.toLowerCase().trim() === mapel.toLowerCase().trim()
   );
   const filteredAtps = savedAtps.filter(a => 
-    a.mapel?.toLowerCase() === mapel.toLowerCase() &&
-    (!a.kelas || isSameKelas(a.kelas, form.kelas))
+    a.mapel?.toLowerCase().trim() === mapel.toLowerCase().trim() &&
+    (!a.kelas || isClassInSameFase(a.kelas, form.kelas, form.fase))
   );
 
   const currentProsemItems = prosemData && Array.isArray(prosemData.items)
-    ? prosemData.items.filter((item: any) => 
-        item.mapel?.toLowerCase().trim() === mapel.toLowerCase().trim() &&
-        String(item.semester) === String(form.semester)
-      )
+    ? (() => {
+        const mapelItems = prosemData.items.filter((item: any) => {
+          const itemMapel = (item.mapel || prosemData.mapel || "").toLowerCase().trim();
+          return itemMapel === mapel.toLowerCase().trim();
+        });
+        
+        const semItems = mapelItems.filter((item: any) => {
+          const itemSem = String(item.semester || prosemData.semester || "1").trim();
+          const targetSem = String(form.semester || "1").trim();
+          return itemSem === targetSem || itemSem.includes(targetSem) || targetSem.includes(itemSem);
+        });
+
+        return semItems.length > 0 ? semItems : mapelItems;
+      })()
     : [];
 
   const [loading, setLoading] = useState(false);
@@ -1095,17 +1120,49 @@ export default function RppPanel({
               {/* PROSEM Integration helper */}
               {currentProsemItems.length > 0 && (
                 <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl space-y-2">
-                  <div className="flex justify-between items-center">
+                  <div className="flex justify-between items-center flex-wrap gap-2">
                     <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider flex items-center gap-1.5">
                       <Grid className="w-3.5 h-3.5" />
                       Integrasi Program Semester (PROSEM)
                     </span>
-                    <span className="text-[9px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full">
-                      {currentProsemItems.length} TP Tersinkronisasi
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const allTpsText = currentProsemItems
+                            .map((it: any) => `- ${it.tujuanPembelajaran.trim()}`)
+                            .join("\n");
+                          const firstCp = currentProsemItems.find((it: any) => it.cp)?.cp || form.cp;
+                          const firstElemen = currentProsemItems.find((it: any) => it.elemen)?.elemen || form.elemen;
+                          const allMateris = Array.from(new Set(currentProsemItems.map((it: any) => it.topik || "").filter(Boolean))).join(", ");
+
+                          setForm(prev => {
+                            const updated = {
+                              ...prev,
+                              tujuanPembelajaran: allTpsText,
+                              cp: firstCp || prev.cp,
+                              elemen: firstElemen || prev.elemen,
+                              materi: allMateris || prev.materi,
+                            };
+                            const htmlSummary = buildRppHtmlSummary(updated, profile);
+                            updated.fullContentHtml = htmlSummary;
+                            setEditorHtml(htmlSummary);
+                            return updated;
+                          });
+                          setMsg(`✅ Berhasil memuat seluruh (${currentProsemItems.length}) Tujuan Pembelajaran dari PROSEM!`);
+                          setTimeout(() => setMsg(""), 3500);
+                        }}
+                        className="text-[9.5px] font-bold text-emerald-800 bg-emerald-200/80 hover:bg-emerald-300 px-2.5 py-1 rounded-md transition shadow-xs flex items-center gap-1 cursor-pointer"
+                      >
+                        ⚡ Muat Semua TP ({currentProsemItems.length})
+                      </button>
+                      <span className="text-[9px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full">
+                        {currentProsemItems.length} TP Tersinkronisasi
+                      </span>
+                    </div>
                   </div>
                   <p className="text-[10.5px] text-slate-600 leading-normal">
-                    Ditemukan data pembelajaran mingguan di Program Semester untuk Mata Pelajaran <strong>{mapel}</strong> dan <strong>Semester {form.semester}</strong>. Pilih salah satu TP untuk memuat data secara otomatis:
+                    Ditemukan data pembelajaran mingguan di Program Semester untuk Mata Pelajaran <strong>{mapel}</strong>. Klik TP individual untuk memilih/menambah atau gunakan tombol <strong>Muat Semua TP</strong>:
                   </p>
                   <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto pr-1">
                     {currentProsemItems.map((item: any, idx: number) => {
@@ -1116,12 +1173,29 @@ export default function RppPanel({
                           type="button"
                           onClick={() => {
                             setForm(prev => {
+                              let newTps = prev.tujuanPembelajaran || "";
+                              const cleanTp = item.tujuanPembelajaran.trim();
+                              if (isSelected) {
+                                const lines = newTps.split('\n').map(l => l.replace(/^-\s*/, '').trim());
+                                const filtered = lines.filter(l => l !== cleanTp && l !== "");
+                                newTps = filtered.length > 0 ? filtered.map(l => `- ${l}`).join('\n') : "";
+                              } else {
+                                if (newTps.trim()) {
+                                  const lines = newTps.split('\n').map(l => l.replace(/^-\s*/, '').trim()).filter(Boolean);
+                                  if (!lines.includes(cleanTp)) {
+                                    lines.push(cleanTp);
+                                  }
+                                  newTps = lines.map(l => `- ${l}`).join('\n');
+                                } else {
+                                  newTps = `- ${cleanTp}`;
+                                }
+                              }
                               const updated = {
                                 ...prev,
-                                tujuanPembelajaran: `- ${item.tujuanPembelajaran.trim()}`,
-                                cp: item.cp || "",
-                                elemen: item.elemen || "",
-                                materi: item.topik || "",
+                                tujuanPembelajaran: newTps,
+                                cp: item.cp || prev.cp,
+                                elemen: item.elemen || prev.elemen,
+                                materi: item.topik || prev.materi,
                                 alokasiWaktu: item.alokasiWaktu ? `${item.alokasiWaktu} JP` : prev.alokasiWaktu,
                                 kelas: prosemData?.kelas || prev.kelas,
                               };
@@ -1130,10 +1204,10 @@ export default function RppPanel({
                               setEditorHtml(htmlSummary);
                               return updated;
                             });
-                            setMsg("✅ Integrasi PROSEM Berhasil! Identitas, Materi, Elemen & CP telah diperbarui.");
+                            setMsg(isSelected ? "Removed TP from RPP." : "✅ Integrasi PROSEM Berhasil! Identitas, TP, CP & Elemen telah diperbarui.");
                             setTimeout(() => setMsg(""), 3500);
                           }}
-                          className={`text-left text-[11px] p-2.5 rounded-lg border transition font-medium flex justify-between items-start gap-2 shadow-xs ${
+                          className={`text-left text-[11px] p-2.5 rounded-lg border transition font-medium flex justify-between items-start gap-2 shadow-xs cursor-pointer ${
                             isSelected 
                               ? "bg-emerald-100/90 border-emerald-300 text-emerald-800" 
                               : "bg-white border-slate-200 text-slate-700 hover:bg-emerald-50 hover:text-emerald-800 hover:border-emerald-200"
