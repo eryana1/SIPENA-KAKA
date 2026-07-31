@@ -12,9 +12,9 @@ interface SchedulePanelProps {
 }
 
 const classOptionsByJenjang: Record<Jenjang, string[]> = {
-  [Jenjang.SD]: ["I", "II", "III", "IV", "V", "VI"],
-  [Jenjang.SMP]: ["VII", "VIII", "IX"],
-  [Jenjang.SMA]: ["X", "XI", "XII"]
+  [Jenjang.SD]: ["1", "2", "3", "4", "5", "6"],
+  [Jenjang.SMP]: ["7", "8", "9"],
+  [Jenjang.SMA]: ["10", "11", "12"]
 };
 
 export default function SchedulePanel({ profile, schedule, onSaveSchedule, apiKey }: SchedulePanelProps) {

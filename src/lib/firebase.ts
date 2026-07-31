@@ -138,27 +138,33 @@ export const saveUserToDb = async (user: User, additionalData: any = {}) => {
 // Retrieve User profile from Firestore
 export const getUserFromDb = async (uid: string) => {
   const localKey = `e12win_user_${uid}`;
+  const localData = getLocal(localKey);
   
   try {
     const userRef = doc(db, "users", uid);
     const snap = await getDoc(userRef);
     if (snap.exists()) {
-      const data = snap.data();
-      setLocal(localKey, data);
-      return data;
+      const remoteData = snap.data();
+      if (localData && localData.updatedAt && remoteData.updatedAt) {
+        if (new Date(localData.updatedAt).getTime() > new Date(remoteData.updatedAt).getTime()) {
+          return localData;
+        }
+      }
+      setLocal(localKey, remoteData);
+      return remoteData;
     }
   } catch (error) {
     console.warn("Firestore getUserFromDb failed (reading from local cache):", error);
   }
   
-  return getLocal(localKey);
+  return localData;
 };
 
 // Update User profile directly
 export const updateUserProfile = async (uid: string, data: any) => {
   const localKey = `e12win_user_${uid}`;
   const localData = getLocal(localKey) || {};
-  const mergedData = { ...localData, ...data };
+  const mergedData = { ...localData, ...data, updatedAt: new Date().toISOString() };
   
   setLocal(localKey, mergedData);
 
@@ -188,37 +194,67 @@ export const getContextDocId = (
   return `${baseType}_${tp}_Sm${sem}_Kls${kls}_Fase${f}_Mapel${mp}`;
 };
 
+// Map to store pending debounced Firestore writes per document key
+const pendingDocWrites = new Map<string, { timeoutId: NodeJS.Timeout; data: any; execute: () => Promise<void> }>();
+
 export const saveDocumentToDb = async (uid: string, collectionName: string, docId: string, data: any) => {
   const localKey = `e12win_doc_${uid}_${collectionName}_${docId}`;
-  setLocal(localKey, data);
+  const docKey = `${uid}_${collectionName}_${docId}`;
+  const dataWithTime = {
+    ...data,
+    updatedAt: new Date().toISOString()
+  };
+  
+  // 1. Always update localStorage immediately for instant resilience and no data loss
+  setLocal(localKey, dataWithTime);
 
-  try {
-    const docRef = doc(db, "users", uid, collectionName, docId);
-    await setDoc(docRef, {
-      ...data,
-      updatedAt: new Date().toISOString()
-    }, { merge: true });
-  } catch (error) {
-    console.warn(`Firestore saveDocumentToDb failed for ${collectionName}/${docId} (offline fallback active):`, error);
+  // 2. Debounce Firestore write stream to prevent "Write stream exhausted maximum allowed queued writes"
+  if (pendingDocWrites.has(docKey)) {
+    clearTimeout(pendingDocWrites.get(docKey)!.timeoutId);
   }
+
+  const executeWrite = async () => {
+    try {
+      const docRef = doc(db, "users", uid, collectionName, docId);
+      await setDoc(docRef, dataWithTime, { merge: true });
+    } catch (error: any) {
+      console.warn(`Firestore saveDocumentToDb warning for ${collectionName}/${docId}:`, error?.message || error);
+    } finally {
+      pendingDocWrites.delete(docKey);
+    }
+  };
+
+  const timeoutId = setTimeout(() => {
+    executeWrite();
+  }, 1000); // 1 second debounce window for Firestore network sync
+
+  pendingDocWrites.set(docKey, { timeoutId, data: dataWithTime, execute: executeWrite });
 };
 
 export const getDocumentFromDb = async (uid: string, collectionName: string, docId: string) => {
   const localKey = `e12win_doc_${uid}_${collectionName}_${docId}`;
+  const localData = getLocal(localKey);
 
   try {
     const docRef = doc(db, "users", uid, collectionName, docId);
     const snap = await getDoc(docRef);
     if (snap.exists()) {
-      const data = snap.data();
-      setLocal(localKey, data);
-      return data;
+      const remoteData = snap.data();
+      if (localData && localData.updatedAt && remoteData.updatedAt) {
+        const localTime = new Date(localData.updatedAt).getTime();
+        const remoteTime = new Date(remoteData.updatedAt).getTime();
+        if (localTime > remoteTime) {
+          return localData;
+        }
+      }
+      setLocal(localKey, remoteData);
+      return remoteData;
     }
   } catch (error) {
     console.warn(`Firestore getDocumentFromDb failed for ${collectionName}/${docId} (reading from local cache):`, error);
   }
 
-  return getLocal(localKey);
+  return localData;
 };
 
 // Save a checkpoint version history

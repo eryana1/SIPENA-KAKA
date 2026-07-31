@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { generatePROTA } from "../lib/ai";
 import { generatePROTADocx } from "../lib/docxGenerator";
+import { downloadBlob } from "../lib/downloadHelper";
 import { uploadFileToDrive } from "../lib/drive";
 import { Fase, PROTAItem, PROTAData, ATPItem, Jenjang } from "../types";
 
@@ -30,30 +31,14 @@ interface ProtaPanelProps {
   accessToken?: string | null;
 }
 
-const isSameKelas = (k1: string, k2: string): boolean => {
-  if (!k1 || !k2) return false;
-  const norm = (k: string) => {
-    const val = k.trim().toUpperCase();
-    const ROMAN_TO_ARABIC: { [key: string]: string } = {
-      "I": "1", "II": "2", "III": "3", "IV": "4", "V": "5", "VI": "6",
-      "VII": "7", "VIII": "8", "IX": "9", "X": "10", "XI": "11", "XII": "12"
-    };
-    return ROMAN_TO_ARABIC[val] || val;
-  };
-  return norm(String(k1)) === norm(String(k2));
-};
-
-const getDefaultKelasForFase = (currentFase: Fase) => {
-  switch (currentFase) {
-    case Fase.A: return "1";
-    case Fase.B: return "3";
-    case Fase.C: return "5";
-    case Fase.D: return "7";
-    case Fase.E: return "10";
-    case Fase.F: return "11";
-    default: return "1";
-  }
-};
+import { 
+  isSameKelas, 
+  getDefaultKelasForFase, 
+  getKelasForFase, 
+  getValidClassesForFase, 
+  isClassInSameFase, 
+  normKelas 
+} from "../lib/profileHelper";
 
 export default function ProtaPanel({ 
   profile, 
@@ -69,7 +54,7 @@ export default function ProtaPanel({
 }: ProtaPanelProps) {
   const [mapel, setMapel] = useState("Bahasa Indonesia");
   const [fase, setFase] = useState<Fase>(profile.fase || Fase.A);
-  const [kelas, setKelas] = useState(profile.kelas || "1");
+  const [kelas, setKelas] = useState(() => getKelasForFase(profile.fase || Fase.A, profile.kelas));
   const [items, setItems] = useState<PROTAItem[]>([]);
   
   const [loading, setLoading] = useState(false);
@@ -144,11 +129,14 @@ export default function ProtaPanel({
     }
   }, [currentJenjang]);
 
-  const currentActiveAtps = savedAtps.filter(atp => {
-    if (atp.mapel?.toLowerCase() !== mapel.toLowerCase()) return false;
-    const atpKelas = atp.kelas || getDefaultKelasForFase(fase);
-    return isSameKelas(atpKelas, kelas);
-  });
+  const filterAtpForContext = (atp: ATPItem) => {
+    if ((atp.mapel || "").toLowerCase().trim() !== mapel.toLowerCase().trim()) return false;
+    const atpKelas = atp.kelas || "";
+    if (!atpKelas || atpKelas.toUpperCase() === "FASE") return true;
+    return isClassInSameFase(atpKelas, kelas, fase);
+  };
+
+  const currentActiveAtps = savedAtps.filter(filterAtpForContext);
 
   const displayedItems = items.filter(item => item.mapel === mapel);
 
@@ -163,11 +151,7 @@ export default function ProtaPanel({
   const isProtaValid = hasAtp && displayedItems.length > 0 && !countMismatch && missingAtpsFromProta.length === 0;
 
   const handleGeneratePROTA = async () => {
-    const activeAtps = savedAtps.filter(atp => {
-      if (atp.mapel?.toLowerCase() !== mapel.toLowerCase()) return false;
-      const atpKelas = atp.kelas || getDefaultKelasForFase(fase);
-      return isSameKelas(atpKelas, kelas);
-    });
+    const activeAtps = savedAtps.filter(filterAtpForContext);
     if (activeAtps.length === 0) {
       alert(`Belum ada data ATP Kelas ${kelas} untuk mata pelajaran ${mapel}. Silakan selesaikan penyusunan ATP terlebih dahulu.`);
       return;
@@ -191,10 +175,10 @@ export default function ProtaPanel({
         };
       });
       
-      setItems(prev => {
-        const remaining = prev.filter(item => item.mapel !== mapel);
-        return [...remaining, ...formatted];
-      });
+      const remaining = items.filter(item => item.mapel !== mapel);
+      const mergedProta = [...remaining, ...formatted];
+      setItems(mergedProta);
+      autoPersistProta(mergedProta);
       setMsg("✅ Program Tahunan (PROTA) berhasil didistribusikan per Semester dan Jam Pelajaran (JP) oleh Gemini AI!");
     } catch (error: any) {
       setMsg(`🔴 Gagal menyusun PROTA: ${error.message || "Kesalahan server"}`);
@@ -204,11 +188,7 @@ export default function ProtaPanel({
   };
 
   const handleLoadAtpManual = () => {
-    const activeAtps = savedAtps.filter(atp => {
-      if (atp.mapel?.toLowerCase() !== mapel.toLowerCase()) return false;
-      const atpKelas = atp.kelas || getDefaultKelasForFase(fase);
-      return isSameKelas(atpKelas, kelas);
-    });
+    const activeAtps = savedAtps.filter(filterAtpForContext);
     if (activeAtps.length === 0) {
       alert(`Belum ada data ATP Kelas ${kelas} untuk mata pelajaran ${mapel}. Silakan selesaikan penyusunan ATP terlebih dahulu.`);
       return;
@@ -223,10 +203,10 @@ export default function ProtaPanel({
       semester: "1",
       topik: atp.topik || ""
     }));
-    setItems(prev => {
-      const remaining = prev.filter(item => item.mapel !== mapel);
-      return [...remaining, ...formatted];
-    });
+    const remaining = items.filter(item => item.mapel !== mapel);
+    const mergedProta = [...remaining, ...formatted];
+    setItems(mergedProta);
+    autoPersistProta(mergedProta);
     setMsg("📋 Data ATP berhasil dimuat! Silakan tentukan pembagian Semester, JP, CP, dan Topik langsung pada tabel di bawah ini.");
   };
 
@@ -275,19 +255,33 @@ export default function ProtaPanel({
     }
   };
 
+  const autoPersistProta = (updatedItems: PROTAItem[]) => {
+    const payload: PROTAData = {
+      fase,
+      mapel,
+      kelas,
+      items: updatedItems,
+      createdAt: new Date().toISOString(),
+      tahunPelajaran: profile.tahunPelajaran,
+      semester: profile.semester
+    } as any;
+    onSaveProta(payload).catch(err => console.warn("Auto-save PROTA failed:", err));
+  };
+
   const handleEditSave = (absoluteIndex: number) => {
-    setItems(prev => {
-      const copy = [...prev];
-      copy[absoluteIndex] = { ...copy[absoluteIndex], ...editForm };
-      return copy;
-    });
+    const copy = [...items];
+    copy[absoluteIndex] = { ...copy[absoluteIndex], ...editForm };
+    setItems(copy);
+    autoPersistProta(copy);
     setEditingId(null);
     setMsg("💡 Detail Program Tahunan berhasil diubah.");
   };
 
   const handleDeleteItem = (indexInDisplayed: number) => {
     const targetId = displayedItems[indexInDisplayed].atpId;
-    setItems(prev => prev.filter(item => item.atpId !== targetId));
+    const updated = items.filter(item => item.atpId !== targetId);
+    setItems(updated);
+    autoPersistProta(updated);
     setMsg("💡 Item PROTA dihapus.");
   };
 
@@ -322,8 +316,7 @@ export default function ProtaPanel({
       const blob = await generatePROTADocx(profile, mapel, displayedItems, kelas);
       const filename = `Program Tahunan_${mapel}.docx`;
       
-      const fileSaver = await import("file-saver");
-      fileSaver.saveAs(blob, filename);
+      downloadBlob(blob, filename);
       setMsg("✅ File Program Tahunan (.docx) berhasil dibuat dan diunduh!");
     } catch (error: any) {
       setMsg(`🔴 Gagal mengunduh berkas Word: ${error.message}`);
@@ -384,13 +377,7 @@ export default function ProtaPanel({
                 onChange={(e) => {
                   const newFase = e.target.value as Fase;
                   setFase(newFase);
-                  // Auto-set default kelas appropriate for the chosen Fase
-                  if (newFase === Fase.A) setKelas("1");
-                  else if (newFase === Fase.B) setKelas("3");
-                  else if (newFase === Fase.C) setKelas("5");
-                  else if (newFase === Fase.D) setKelas("7");
-                  else if (newFase === Fase.E) setKelas("10");
-                  else if (newFase === Fase.F) setKelas("11");
+                  setKelas(getKelasForFase(newFase, kelas));
                 }}
                 className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
@@ -402,25 +389,15 @@ export default function ProtaPanel({
             <div>
               <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Kelas</label>
               <select
-                value={kelas}
+                value={normKelas(kelas)}
                 onChange={(e) => setKelas(e.target.value)}
                 className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 {(() => {
-                  const getKelasOptionsForFase = (currentFase: Fase) => {
-                    switch (currentFase) {
-                      case Fase.A: return ["1", "2", "I", "II"];
-                      case Fase.B: return ["3", "4", "III", "IV"];
-                      case Fase.C: return ["5", "6", "V", "VI"];
-                      case Fase.D: return ["7", "8", "9", "VII", "VIII", "IX"];
-                      case Fase.E: return ["10", "X"];
-                      case Fase.F: return ["11", "12", "XI", "XII"];
-                      default: return ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
-                    }
-                  };
-                  const options = [...getKelasOptionsForFase(fase)];
-                  if (kelas && !options.includes(kelas)) {
-                    options.push(kelas);
+                  const options = [...getValidClassesForFase(fase)];
+                  const currentNorm = normKelas(kelas);
+                  if (currentNorm && !options.includes(currentNorm)) {
+                    options.push(currentNorm);
                   }
                   return options.map((k) => (
                     <option key={k} value={k}>Kelas {k}</option>

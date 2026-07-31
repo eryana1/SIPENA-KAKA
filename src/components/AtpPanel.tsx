@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { generateATP } from "../lib/ai";
 import { generateATPDocx } from "../lib/docxGenerator";
+import { downloadBlob } from "../lib/downloadHelper";
 import { uploadFileToDrive } from "../lib/drive";
 import { Fase, ATPItem, ATPData, TPItem, Jenjang } from "../types";
 import { getAuth } from "firebase/auth";
@@ -33,17 +34,14 @@ interface AtpPanelProps {
   accessToken?: string | null;
 }
 
-export const getDefaultKelasForFase = (fase: Fase) => {
-  switch (fase) {
-    case Fase.A: return "1";
-    case Fase.B: return "3";
-    case Fase.C: return "5";
-    case Fase.D: return "7";
-    case Fase.E: return "10";
-    case Fase.F: return "11";
-    default: return "1";
-  }
-};
+import { 
+  isSameKelas, 
+  getDefaultKelasForFase, 
+  getKelasForFase, 
+  getValidClassesForFase, 
+  isClassInSameFase, 
+  normKelas 
+} from "../lib/profileHelper";
 
 export default function AtpPanel({ 
   profile, 
@@ -58,7 +56,7 @@ export default function AtpPanel({
 }: AtpPanelProps) {
   const [mapel, setMapel] = useState("Bahasa Indonesia");
   const [fase, setFase] = useState<Fase>(profile.fase || Fase.A);
-  const [kelas, setKelas] = useState("Fase");
+  const [kelas, setKelas] = useState(() => getKelasForFase(profile.fase || Fase.A, profile.kelas));
   const [items, setItems] = useState<ATPItem[]>([]);
   
   const [selectedTpIds, setSelectedTpIds] = useState<{ [key: string]: boolean }>({});
@@ -105,8 +103,9 @@ export default function AtpPanel({
     if (atpData) {
       const defaultMapel = mapel || atpData.mapel || (mapelPresets[currentJenjang] ? mapelPresets[currentJenjang][0] : "Bahasa Indonesia");
       setMapel(defaultMapel);
-      setFase(atpData.fase || profile.fase || Fase.A);
-      setKelas("Fase");
+      const currentFase = atpData.fase || profile.fase || Fase.A;
+      setFase(currentFase);
+      setKelas(atpData.kelas && atpData.kelas !== "Fase" ? getKelasForFase(currentFase, atpData.kelas) : getKelasForFase(currentFase, profile.kelas));
       
       const loadedItems = (atpData.items || []).map(item => ({
         ...item,
@@ -193,36 +192,41 @@ export default function AtpPanel({
 
       // If there are missing items, append them with safe defaults so we preserve 100% data
       const reconciledItems = [...returnedItems];
-      missingTps.forEach(missing => {
+      missingTps.forEach((missing: any) => {
+        const fallbackGlosarium = `${missing.topik || missing.elemen || "Topik"}: Istilah dan kata kunci utama terkait ${missing.tujuanPembelajaran || "pembelajaran"}.`;
         reconciledItems.push({
           elemen: missing.elemen || "Umum",
           cp: missing.cp || "",
           tujuanPembelajaran: missing.tujuanPembelajaran,
           kelas: getDefaultKelasForFase(fase),
           perkiraanJam: 2,
-          topik: "Materi Terkait",
-          glosarium: "-"
+          topik: missing.topik || "Materi Terkait",
+          glosarium: (missing.glosarium && typeof missing.glosarium === 'string' && missing.glosarium.trim() !== "" && missing.glosarium.trim() !== "-") ? missing.glosarium : fallbackGlosarium
         });
       });
 
-      const formatted: ATPItem[] = reconciledItems.map((item: any, index: number) => ({
-        tpId: `atp-item-${index}-${Math.random().toString(36).substr(2, 5)}`,
-        mapel: mapel,
-        cp: item.cp || "",
-        elemen: item.elemen || "",
-        kelas: item.kelas || getDefaultKelasForFase(fase),
-        tujuanPembelajaran: item.tujuanPembelajaran,
-        perkiraanJam: item.perkiraanJam || 2,
-        topik: item.topik || "Topik Terkait",
-        glosarium: item.glosarium || "-",
-        order: index + 1
-      }));
+      const formatted: ATPItem[] = reconciledItems.map((item: any, index: number) => {
+        const topic = item.topik || "Topik Terkait";
+        const fallbackGlosarium = `${topic}: Kata kunci dan konsep utama terkait ${item.tujuanPembelajaran || "pembelajaran"}.`;
+        return {
+          tpId: `atp-item-${index}-${Math.random().toString(36).substr(2, 5)}`,
+          mapel: mapel,
+          cp: item.cp || "",
+          elemen: item.elemen || "",
+          kelas: item.kelas || getDefaultKelasForFase(fase),
+          tujuanPembelajaran: item.tujuanPembelajaran,
+          perkiraanJam: item.perkiraanJam || 2,
+          topik: topic,
+          glosarium: (item.glosarium && item.glosarium.trim() !== "" && item.glosarium.trim() !== "-") ? item.glosarium : fallbackGlosarium,
+          order: index + 1
+        };
+      });
       
       // Overwrite only the current subject's items, keep other subjects intact
-      setItems(prev => {
-        const remaining = prev.filter(item => item.mapel?.toLowerCase().trim() !== mapel.toLowerCase().trim());
-        return [...remaining, ...formatted];
-      });
+      const remaining = items.filter(item => item.mapel?.toLowerCase().trim() !== mapel.toLowerCase().trim());
+      const mergedItems = [...remaining, ...formatted];
+      setItems(mergedItems);
+      autoPersistAtp(mergedItems);
 
       setMsg("✅ Alur Tujuan Pembelajaran (ATP) berhasil disusun otomatis menggunakan 100% data TP pilihan Anda secara lengkap!");
     } catch (error: any) {
@@ -230,6 +234,19 @@ export default function AtpPanel({
     } finally {
       setLoading(false);
     }
+  };
+
+  const autoPersistAtp = (updatedItems: ATPItem[]) => {
+    const payload: ATPData = {
+      mapel,
+      fase,
+      kelas,
+      items: updatedItems,
+      createdAt: new Date().toISOString(),
+      tahunPelajaran: profile.tahunPelajaran,
+      semester: profile.semester
+    } as any;
+    onSaveAtp(payload).catch(err => console.warn("Auto-save ATP failed:", err));
   };
 
   const handleEditStart = (item: ATPItem, indexInDisplayed: number) => {
@@ -250,18 +267,19 @@ export default function AtpPanel({
   };
 
   const handleEditSave = (absoluteIndex: number) => {
-    setItems(prev => {
-      const copy = [...prev];
-      copy[absoluteIndex] = { ...copy[absoluteIndex], ...editForm };
-      return copy;
-    });
+    const copy = [...items];
+    copy[absoluteIndex] = { ...copy[absoluteIndex], ...editForm };
+    setItems(copy);
+    autoPersistAtp(copy);
     setEditingId(null);
     setMsg("💡 Detail Alur Tujuan Pembelajaran berhasil diubah.");
   };
 
   const handleDeleteItem = (indexInDisplayed: number) => {
     const targetId = displayedItems[indexInDisplayed].tpId;
-    setItems(prev => prev.filter(item => item.tpId !== targetId));
+    const updated = items.filter(item => item.tpId !== targetId);
+    setItems(updated);
+    autoPersistAtp(updated);
     setMsg("💡 Item ATP berhasil dihapus.");
   };
 
@@ -296,8 +314,7 @@ export default function AtpPanel({
       const blob = await generateATPDocx(profile, mapel, displayedItems, kelas);
       const filename = `Alur Tujuan Pembelajaran_${mapel}.docx`;
       
-      const fileSaver = await import("file-saver");
-      fileSaver.saveAs(blob, filename);
+      downloadBlob(blob, filename);
       setMsg("✅ File Alur Tujuan Pembelajaran (.docx) berhasil dibuat dan diunduh!");
     } catch (error: any) {
       setMsg(`🔴 Gagal mengunduh berkas Word: ${error.message}`);
@@ -515,12 +532,12 @@ export default function AtpPanel({
                           {(() => {
                             const getKelasOptionsForFase = (currentFase: Fase) => {
                               switch (currentFase) {
-                                case Fase.A: return ["1", "2", "I", "II"];
-                                case Fase.B: return ["3", "4", "III", "IV"];
-                                case Fase.C: return ["5", "6", "V", "VI"];
-                                case Fase.D: return ["7", "8", "9", "VII", "VIII", "IX"];
-                                case Fase.E: return ["10", "X"];
-                                case Fase.F: return ["11", "12", "XI", "XII"];
+                                case Fase.A: return ["1", "2"];
+                                case Fase.B: return ["3", "4"];
+                                case Fase.C: return ["5", "6"];
+                                case Fase.D: return ["7", "8", "9"];
+                                case Fase.E: return ["10"];
+                                case Fase.F: return ["11", "12"];
                                 default: return ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
                               }
                             };
@@ -613,7 +630,11 @@ export default function AtpPanel({
                             className="p-1 border rounded bg-white w-full text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
                           />
                         ) : (
-                          <span className="text-slate-500 italic">{item.glosarium || "-"}</span>
+                          <span className="text-slate-600 italic">
+                            {(item.glosarium && item.glosarium.trim() !== "" && item.glosarium.trim() !== "-")
+                              ? item.glosarium
+                              : `${item.topik || item.elemen || "Topik"}: Kata kunci dan istilah utama pembelajaran.`}
+                          </span>
                         )}
                       </td>
 

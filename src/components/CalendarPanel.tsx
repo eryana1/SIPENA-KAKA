@@ -4,6 +4,7 @@ import { Upload, Calendar, Calculator, Edit3, Save, FileText, Loader2, Download 
 import { analyzeAcademicCalendar } from "../lib/ai";
 import { CalendarData } from "../types";
 import { generateCalendarDocx } from "../lib/docxGenerator";
+import { downloadBlob } from "../lib/downloadHelper";
 
 interface CalendarPanelProps {
   calendarData: CalendarData | null;
@@ -120,8 +121,7 @@ export default function CalendarPanel({ calendarData, onSaveCalendar, apiKey, pr
       const blob = await generateCalendarDocx(profile || {}, stats);
       const filename = `Analisis_Kalender_Pendidikan.docx`;
       
-      const fileSaver = await import("file-saver");
-      fileSaver.saveAs(blob, filename);
+      downloadBlob(blob, filename);
       setMsg("✅ File Analisis Kalender (.docx) berhasil dibuat dan diunduh!");
       setTimeout(() => setMsg(""), 4000);
     } catch (error: any) {

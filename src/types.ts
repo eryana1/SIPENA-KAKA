@@ -61,6 +61,20 @@ export interface UserProfile {
   teachersList?: TeacherProfile[];
 }
 
+export interface AppAccount {
+  id: string;
+  username: string;
+  password: string;
+  schoolName: string;
+  teacherName: string;
+  maxDevices: number;
+  role: "admin" | "user";
+  status: "active" | "disabled";
+  createdAt: string;
+  notes?: string;
+  lastLogin?: string;
+}
+
 export interface TeacherProfile {
   id: string;
   nama: string;
@@ -80,6 +94,8 @@ export interface TPItem {
   kompetensi: string;
   konten: string;
   tujuanPembelajaran: string;
+  materi?: string;
+  glosarium?: string;
   checked?: boolean;
   kelas?: string;
 }

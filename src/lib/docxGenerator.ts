@@ -15,7 +15,6 @@ import {
   PageBreak,
   ImageRun
 } from "docx";
-import { saveAs } from "file-saver";
 import { getTeacherForKelas } from "./profileHelper";
 
 // Helper to convert dataUrl base64 to Uint8Array for docx ImageRun
@@ -420,46 +419,55 @@ export const generateTPDocx = async (profile: any, mapel: string, items: any[], 
         createCell("NO", true, AlignmentType.CENTER, 5, "F0F4F8"),
         createCell("ELEMEN", true, AlignmentType.CENTER, 15, "F0F4F8"),
         createCell("CAPAIAN PEMBELAJARAN (CP)", true, AlignmentType.CENTER, 25, "F0F4F8"),
-        createCell("KOMPETENSI", true, AlignmentType.CENTER, 15, "F0F4F8"),
-        createCell("KONTEN / MATERI", true, AlignmentType.CENTER, 15, "F0F4F8"),
-        createCell("RUMUSAN TUJUAN PEMBELAJARAN (TP)", true, AlignmentType.CENTER, 25, "F0F4F8"),
+        createCell("TUJUAN PEMBELAJARAN (TP)", true, AlignmentType.CENTER, 27, "F0F4F8"),
+        createCell("MATERI PEMBELAJARAN", true, AlignmentType.CENTER, 16, "F0F4F8"),
+        createCell("GLOSARIUM", true, AlignmentType.CENTER, 12, "F0F4F8"),
       ],
     }),
   ];
 
-  // Group items by Elemen and CP
-  const groupedItems: { [key: string]: { elemen: string; cp: string; items: any[] } } = {};
-  
-  items.forEach(item => {
-    const key = item.elemen || "Umum";
-    if (!groupedItems[key]) {
-      groupedItems[key] = {
-        elemen: item.elemen || "Umum",
-        cp: item.cp || "",
-        items: []
-      };
+  let prevElemen = "";
+  let prevCp = "";
+  let tpGroupIndex = 0;
+
+  items.forEach((tpItem, tpIdx) => {
+    const currentElemen = tpItem.elemen || "Umum";
+    const currentCp = tpItem.cp || "-";
+    const isSameGroup = tpIdx > 0 && currentElemen === prevElemen && currentCp === prevCp;
+
+    if (isSameGroup) {
+      tpGroupIndex += 1;
+    } else {
+      tpGroupIndex = 1;
+      prevElemen = currentElemen;
+      prevCp = currentCp;
     }
-    groupedItems[key].items.push(item);
-  });
 
-  const groupedList = Object.values(groupedItems);
+    let tpDetailText = `${tpGroupIndex}. ${tpItem.tujuanPembelajaran || "-"}`;
+    const details = [];
+    if (tpItem.kompetensi) details.push(`Kompetensi: ${tpItem.kompetensi}`);
+    if (tpItem.konten) details.push(`Konten: ${tpItem.konten}`);
+    if (details.length > 0) {
+      tpDetailText += `\n   • ${details.join(" | ")}`;
+    }
 
-  groupedList.forEach((group, index) => {
-    group.items.forEach((tpItem, tpIdx) => {
-      const isFirst = tpIdx === 0;
-      tableRows.push(
-        new TableRow({
-          children: [
-            createCell(isFirst ? (index + 1).toString() : "", false, AlignmentType.CENTER, 5),
-            createCell(isFirst ? group.elemen : "", true, AlignmentType.LEFT, 15),
-            createCell(isFirst ? group.cp : "", false, AlignmentType.LEFT, 25),
-            createCell(tpItem.kompetensi || "-", false, AlignmentType.LEFT, 15),
-            createCell(tpItem.konten || "-", false, AlignmentType.LEFT, 15),
-            createCell(`${tpIdx + 1}. ${tpItem.tujuanPembelajaran || "-"}`, false, AlignmentType.LEFT, 25),
-          ],
-        })
-      );
-    });
+    const materiText = tpItem.materi || tpItem.konten || "-";
+    const glosariumText = (tpItem.glosarium && tpItem.glosarium.trim() !== "" && tpItem.glosarium.trim() !== "-")
+      ? tpItem.glosarium
+      : `${tpItem.konten || tpItem.materi || tpItem.kompetensi || tpItem.elemen || "Materi"}: Kata kunci dan konsep utama pembelajaran.`;
+
+    tableRows.push(
+      new TableRow({
+        children: [
+          createCell((tpIdx + 1).toString(), false, AlignmentType.CENTER, 5),
+          createCell(isSameGroup ? "" : currentElemen, !isSameGroup, AlignmentType.LEFT, 15),
+          createCell(isSameGroup ? "" : currentCp, false, AlignmentType.LEFT, 25),
+          createCell(tpDetailText, false, AlignmentType.LEFT, 27),
+          createCell(materiText, false, AlignmentType.LEFT, 16),
+          createCell(glosariumText, false, AlignmentType.LEFT, 12),
+        ],
+      })
+    );
   });
 
   const doc = new Document({
@@ -535,7 +543,9 @@ export const generateATPDocx = async (profile: any, mapel: string, items: any[],
           createCell(item.tujuanPembelajaran || "", false, AlignmentType.LEFT, 25),
           createCell(`${item.perkiraanJam || 2} JP`, false, AlignmentType.CENTER, 8),
           createCell(item.topik || "", false, AlignmentType.LEFT, 8.5),
-          createCell(item.glosarium || "", false, AlignmentType.LEFT, 8.5),
+          createCell((item.glosarium && item.glosarium.trim() !== "" && item.glosarium.trim() !== "-")
+            ? item.glosarium
+            : `${item.topik || item.elemen || "Topik"}: Kata kunci dan istilah utama pembelajaran.`, false, AlignmentType.LEFT, 8.5),
         ],
       })
     );

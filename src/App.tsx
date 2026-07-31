@@ -30,7 +30,14 @@ import {
   Loader2,
   RefreshCw,
   Save,
-  Check
+  Check,
+  Users,
+  Key,
+  Lock,
+  UserCheck,
+  ShieldAlert,
+  Eye,
+  EyeOff
 } from "lucide-react";
 
 import { 
@@ -59,8 +66,18 @@ import {
   PROTAData, 
   PROSEMData, 
   RPPData, 
-  VersionHistory 
+  VersionHistory,
+  AppAccount
 } from "./types";
+
+import { getAllAccounts, authenticateUser } from "./lib/accounts";
+import { 
+  isSameKelas, 
+  isClassInSameFase, 
+  normKelas, 
+  getKelasForFase, 
+  getDefaultKelasForFase 
+} from "./lib/profileHelper";
 
 // Import modular panels
 import DashboardPanel from "./components/DashboardPanel";
@@ -73,6 +90,7 @@ import ProsemPanel from "./components/ProsemPanel";
 import RppPanel from "./components/RppPanel";
 import { DisdikLogo } from "./components/DisdikLogo";
 import SettingsPanel from "./components/SettingsPanel";
+import AdminPanel from "./components/AdminPanel";
 
 export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
@@ -107,11 +125,19 @@ export default function App() {
 
   const [authError, setAuthError] = useState<React.ReactNode | null>(null);
 
+  // Account Authentication States
+  const [currentAccount, setCurrentAccount] = useState<AppAccount | null>(null);
+  const [loginTab, setLoginTab] = useState<"account" | "admin">("account");
+  const [loginUsername, setLoginUsername] = useState<string>("");
+  const [loginPassword, setLoginPassword] = useState<string>("");
+  const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [loginErrorMsg, setLoginErrorMsg] = useState<string | null>(null);
+
   // State for Training/Guest Mode
   const [guestName, setGuestName] = useState<string>("");
   const [guestSchool, setGuestSchool] = useState<string>("");
 
-  // Complete Firebase Auth Listener
+  // Complete Auth Listener
   useEffect(() => {
     const unsubscribe = initAuthListener(
       async (firebaseUser, token) => {
@@ -121,35 +147,63 @@ export default function App() {
         setLoading(false);
       },
       async () => {
-        // Restore guest session only if both are set, otherwise show the landing/login screen
+        // Restore account session if saved
+        const activeAccountId = localStorage.getItem("e12win_active_account_id");
         const localUid = localStorage.getItem("e12win_local_uid");
         const savedName = localStorage.getItem("e12win_guest_name");
-        
-        if (localUid && savedName) {
-          const guestUser = {
-            uid: localUid,
-            displayName: savedName,
-            email: "peserta@e12win.id",
-            emailVerified: false,
-            isAnonymous: true,
-            metadata: {},
-            providerData: [],
-            refreshToken: "",
-            tenantId: null,
-            delete: async () => {},
-            getIdToken: async () => "",
-            getIdTokenResult: async () => ({} as any),
-            reload: async () => {},
-            toJSON: () => ({})
-          } as unknown as FirebaseUser;
 
-          setUser(guestUser);
-          setAccessToken(null);
-          await loadUserData(localUid, guestUser);
+        if (activeAccountId && localUid && savedName) {
+          try {
+            const allAccs = await getAllAccounts();
+            const foundAcc = allAccs.find((a) => a.id.toLowerCase() === activeAccountId.toLowerCase());
+            if (foundAcc && foundAcc.status === "active") {
+              setCurrentAccount(foundAcc);
+              const isAdmin = foundAcc.role === "admin" && (foundAcc.id.toLowerCase() === "admin" || foundAcc.username.toLowerCase() === "admin");
+              if (!isAdmin && activeTab === "admin_users") {
+                setActiveTab("dashboard");
+              }
+
+              const guestUser = {
+                uid: localUid,
+                displayName: savedName,
+                email: foundAcc.username + "@e12win.id",
+                emailVerified: false,
+                isAnonymous: true,
+                metadata: {},
+                providerData: [],
+                refreshToken: "",
+                tenantId: null,
+                delete: async () => {},
+                getIdToken: async () => "",
+                getIdTokenResult: async () => ({} as any),
+                reload: async () => {},
+                toJSON: () => ({})
+              } as unknown as FirebaseUser;
+
+              setUser(guestUser);
+              setAccessToken(null);
+              await loadUserData(localUid, guestUser);
+            } else {
+              // Account disabled or missing
+              localStorage.removeItem("e12win_active_account_id");
+              setUser(null);
+              setAccessToken(null);
+              setProfile(null);
+              setCurrentAccount(null);
+            }
+          } catch (err) {
+            console.warn("Error restoring active account:", err);
+            setUser(null);
+            setAccessToken(null);
+            setProfile(null);
+            setCurrentAccount(null);
+          }
         } else {
+          // No active account logged in -> force login screen
           setUser(null);
           setAccessToken(null);
           setProfile(null);
+          setCurrentAccount(null);
         }
         setLoading(false);
       }
@@ -180,7 +234,7 @@ export default function App() {
               sekolah: savedSchool,
               jenjang: Jenjang.SD,
               fase: Fase.A,
-              kelas: "IV",
+              kelas: "1",
               tahunPelajaran: "2026/2027",
               semester: "1",
               tanggalDibuat: new Date().toISOString()
@@ -212,7 +266,7 @@ export default function App() {
             sekolah: savedSchool,
             jenjang: Jenjang.SD,
             fase: Fase.A,
-            kelas: "IV",
+            kelas: "1",
             tahunPelajaran: "2026/2027",
             semester: "1",
             tanggalDibuat: new Date().toISOString()
@@ -259,6 +313,69 @@ export default function App() {
       Promise.all(tasks),
       new Promise((resolve) => setTimeout(resolve, 2500))
     ]);
+  };
+
+  const handleAccountLogin = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setLoginErrorMsg(null);
+    if (!loginUsername.trim() || !loginPassword.trim()) {
+      setLoginErrorMsg("Silakan masukkan Username / Kode Sekolah dan Password Anda.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await authenticateUser(loginUsername, loginPassword);
+      if (!res.success || !res.account) {
+        setLoginErrorMsg(res.error || "Gagal masuk. Silakan periksa username dan password Anda.");
+        setLoading(false);
+        return;
+      }
+
+      const acc = res.account;
+      setCurrentAccount(acc);
+      localStorage.setItem("e12win_active_account_id", acc.id);
+
+      const sanitizeStr = (str: string) => str.trim().toLowerCase().replace(/[^a-z0-9]/g, "_").replace(/_+/g, "_");
+      const accUid = "user_" + sanitizeStr(acc.id);
+
+      localStorage.setItem("e12win_local_uid", accUid);
+      localStorage.setItem("e12win_guest_name", acc.teacherName || acc.username);
+      localStorage.setItem("e12win_guest_school", acc.schoolName);
+
+      const userObj = {
+        uid: accUid,
+        displayName: acc.teacherName || acc.username,
+        email: acc.username + "@e12win.id",
+        emailVerified: false,
+        isAnonymous: true,
+        metadata: {},
+        providerData: [],
+        refreshToken: "",
+        tenantId: null,
+        delete: async () => {},
+        getIdToken: async () => "",
+        getIdTokenResult: async () => ({} as any),
+        reload: async () => {},
+        toJSON: () => ({})
+      } as unknown as FirebaseUser;
+
+      setUser(userObj);
+      setAccessToken(null);
+      await loadUserData(accUid, userObj);
+
+      const isAdmin = acc.role === "admin" && (acc.id.toLowerCase() === "admin" || acc.username.toLowerCase() === "admin");
+      if (isAdmin) {
+        setActiveTab("admin_users");
+      } else {
+        setActiveTab("dashboard");
+      }
+    } catch (err: any) {
+      console.error("Account login error:", err);
+      setLoginErrorMsg("Terjadi masalah saat login: " + err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleGuestLogin = async (e?: React.FormEvent) => {
@@ -369,7 +486,8 @@ export default function App() {
   const handleLogout = async () => {
     setLoading(true);
     try {
-      // First clear localStorage so the auth state change listener won't auto-restore the guest session
+      // Clear localStorage
+      localStorage.removeItem("e12win_active_account_id");
       localStorage.removeItem("e12win_local_uid");
       localStorage.removeItem("e12win_guest_name");
       localStorage.removeItem("e12win_guest_school");
@@ -381,6 +499,10 @@ export default function App() {
       setUser(null);
       setAccessToken(null);
       setProfile(null);
+      setCurrentAccount(null);
+      setLoginUsername("");
+      setLoginPassword("");
+      setLoginErrorMsg(null);
       
       // Clear states
       setCalendarData(null);
@@ -500,37 +622,21 @@ export default function App() {
       tahunPelajaran: "2026/2027",
       semester: "1"
     }) as any;
-    let docId = getContextDocId("prota", activeProfile, ctx.mapel, ctx.kelas, ctx.fase);
+    const targetKelas = normKelas(ctx.kelas);
+    let docId = getContextDocId("prota", activeProfile, ctx.mapel, targetKelas, ctx.fase);
     try {
       let prota = await getDocumentFromDb(user.uid, "academic_data", docId);
       if (!prota) {
-        const altKls = getAlternateKelas(ctx.kelas);
+        const altKls = getAlternateKelas(targetKelas);
         if (altKls) {
           const altDocId = getContextDocId("prota", activeProfile, ctx.mapel, altKls, ctx.fase);
           prota = await getDocumentFromDb(user.uid, "academic_data", altDocId);
         }
       }
 
-      if (!prota) {
-        const FASE_CLASSES: { [key: string]: string[] } = {
-          A: ["1", "2", "I", "II"],
-          B: ["3", "4", "III", "IV"],
-          C: ["5", "6", "V", "VI"],
-          D: ["7", "8", "9", "VII", "VIII", "IX"],
-          E: ["10", "X"],
-          F: ["11", "12", "XI", "XII"]
-        };
-        const candidateClasses = FASE_CLASSES[ctx.fase] || ["1", "2", "Fase"];
-        for (const k of candidateClasses) {
-          const fDocId = getContextDocId("prota", activeProfile, ctx.mapel, k, ctx.fase);
-          prota = await getDocumentFromDb(user.uid, "academic_data", fDocId);
-          if (prota) break;
-        }
-      }
-
-      if (!prota) {
-        const faseDocId = getContextDocId("prota", activeProfile, ctx.mapel, "Fase", ctx.fase);
-        prota = await getDocumentFromDb(user.uid, "academic_data", faseDocId);
+      // Ensure loaded prota actually matches the requested class/fase
+      if (prota && prota.kelas && !isClassInSameFase(prota.kelas, targetKelas, ctx.fase as Fase)) {
+        prota = null;
       }
 
       setProtaData(prota ? (prota as PROTAData) : null);
@@ -551,43 +657,36 @@ export default function App() {
     setProtaData(data);
   };
 
-  const handleLoadProsem = async (ctx: { mapel: string; kelas: string; fase: string }) => {
+  const handleLoadProsem = async (ctx: { mapel: string; kelas: string; fase: string; semester?: string }) => {
     if (!user) return;
     const activeProfile = (profile || {
       tahunPelajaran: "2026/2027",
       semester: "1"
     }) as any;
-    let docId = getContextDocId("prosem", activeProfile, ctx.mapel, ctx.kelas, ctx.fase);
+    const reqSem = ctx.semester || activeProfile.semester || "1";
+    const profWithSem = { ...activeProfile, semester: reqSem };
+    const targetKelas = normKelas(ctx.kelas);
+    let docId = getContextDocId("prosem", profWithSem, ctx.mapel, targetKelas, ctx.fase);
     try {
       let prosem = await getDocumentFromDb(user.uid, "academic_data", docId);
       if (!prosem) {
-        const altKls = getAlternateKelas(ctx.kelas);
+        // Try other semester as fallback
+        const altSem = reqSem === "2" ? "1" : "2";
+        const altProf = { ...activeProfile, semester: altSem };
+        const altSemDocId = getContextDocId("prosem", altProf, ctx.mapel, targetKelas, ctx.fase);
+        prosem = await getDocumentFromDb(user.uid, "academic_data", altSemDocId);
+      }
+      if (!prosem) {
+        const altKls = getAlternateKelas(targetKelas);
         if (altKls) {
-          const altDocId = getContextDocId("prosem", activeProfile, ctx.mapel, altKls, ctx.fase);
+          const altDocId = getContextDocId("prosem", profWithSem, ctx.mapel, altKls, ctx.fase);
           prosem = await getDocumentFromDb(user.uid, "academic_data", altDocId);
         }
       }
 
-      if (!prosem) {
-        const FASE_CLASSES: { [key: string]: string[] } = {
-          A: ["1", "2", "I", "II"],
-          B: ["3", "4", "III", "IV"],
-          C: ["5", "6", "V", "VI"],
-          D: ["7", "8", "9", "VII", "VIII", "IX"],
-          E: ["10", "X"],
-          F: ["11", "12", "XI", "XII"]
-        };
-        const candidateClasses = FASE_CLASSES[ctx.fase] || ["1", "2", "Fase"];
-        for (const k of candidateClasses) {
-          const fDocId = getContextDocId("prosem", activeProfile, ctx.mapel, k, ctx.fase);
-          prosem = await getDocumentFromDb(user.uid, "academic_data", fDocId);
-          if (prosem) break;
-        }
-      }
-
-      if (!prosem) {
-        const faseDocId = getContextDocId("prosem", activeProfile, ctx.mapel, "Fase", ctx.fase);
-        prosem = await getDocumentFromDb(user.uid, "academic_data", faseDocId);
+      // Ensure loaded prosem actually matches the requested class/fase
+      if (prosem && prosem.kelas && !isClassInSameFase(prosem.kelas, targetKelas, ctx.fase as Fase)) {
+        prosem = null;
       }
 
       setProsemData(prosem ? (prosem as PROSEMData) : null);
@@ -603,7 +702,8 @@ export default function App() {
       tahunPelajaran: "2026/2027",
       semester: "1"
     }) as any;
-    const docId = getContextDocId("prosem", activeProfile, data.mapel, data.kelas, data.fase);
+    const profWithSem = { ...activeProfile, semester: data.semester || activeProfile.semester || "1" };
+    const docId = getContextDocId("prosem", profWithSem, data.mapel, data.kelas, data.fase);
     await saveDocumentToDb(user.uid, "academic_data", docId, data);
     setProsemData(data);
   };
@@ -816,56 +916,120 @@ export default function App() {
           </p>
 
           <div className="w-full max-w-md mx-auto pt-2">
-            <form onSubmit={handleGuestLogin} className="w-full bg-slate-900/80 border border-white/10 p-6 rounded-2xl space-y-4 shadow-2xl text-left backdrop-blur-md">
-              <div className="text-left space-y-1.5 border-b border-white/5 pb-3">
-                <h3 className="font-bold text-lg text-white flex items-center gap-2">
-                  <span className="flex h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  Masuk / Akses Proyek
-                </h3>
-                <p className="text-xs text-slate-400 leading-normal">
-                  Masukkan Nama Lengkap &amp; Sekolah Anda untuk memulai atau melanjutkan proyek yang pernah Anda simpan sebelumnya.
-                </p>
-              </div>
+            <div className="w-full bg-slate-900/80 border border-white/10 p-6 rounded-2xl shadow-2xl text-left backdrop-blur-md space-y-4">
               
-              <div className="space-y-2">
-                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Nama Lengkap Beserta Gelar <span className="text-red-400">*</span></label>
-                <input
-                  type="text"
-                  value={guestName}
-                  onChange={(e) => setGuestName(e.target.value)}
-                  placeholder="Contoh: Budi Santoso, S.Pd."
-                  required
-                  className="w-full p-3 border border-white/15 rounded-xl bg-slate-950/80 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium placeholder-slate-600 transition-all"
-                />
+              {/* Login Mode Tabs */}
+              <div className="grid grid-cols-2 gap-1 bg-slate-950/80 p-1 rounded-xl border border-white/10 text-[11px] font-bold">
+                <button
+                  type="button"
+                  onClick={() => { setLoginTab("account"); setLoginErrorMsg(null); }}
+                  className={`py-2 px-1.5 rounded-lg transition text-center flex items-center justify-center gap-1 cursor-pointer ${
+                    loginTab === "account" ? "bg-blue-600 text-white shadow-md font-extrabold" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  <UserCheck className="w-3.5 h-3.5" />
+                  <span>Akun Sekolah</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { setLoginTab("admin"); setLoginErrorMsg(null); setLoginUsername("admin"); }}
+                  className={`py-2 px-1.5 rounded-lg transition text-center flex items-center justify-center gap-1 cursor-pointer ${
+                    loginTab === "admin" ? "bg-purple-600 text-white shadow-md font-extrabold" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>Admin</span>
+                </button>
               </div>
 
-              <div className="space-y-2">
-                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Nama Sekolah / Satuan Pendidikan <span className="text-red-400">*</span></label>
-                <input
-                  type="text"
-                  value={guestSchool}
-                  onChange={(e) => setGuestSchool(e.target.value)}
-                  placeholder="Contoh: SDN 1 Cijantung"
-                  required
-                  className="w-full p-3 border border-white/15 rounded-xl bg-slate-950/80 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium placeholder-slate-600 transition-all"
-                />
-              </div>
+              {/* Login Error Alert */}
+              {loginErrorMsg && (
+                <div className="p-3 bg-red-950/60 border border-red-500/40 text-red-200 rounded-xl text-xs flex items-center gap-2">
+                  <ShieldAlert className="w-4 h-4 text-red-400 shrink-0" />
+                  <span>{loginErrorMsg}</span>
+                </div>
+              )}
 
-              <button
-                type="submit"
-                className="w-full py-3.5 px-4 bg-gradient-to-r from-blue-500 to-sky-500 hover:from-blue-600 hover:to-sky-600 text-white font-extrabold text-sm rounded-xl transition shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2 mt-4 cursor-pointer"
-              >
-                <Sparkles className="w-4 h-4 text-amber-300" />
-                Mulai Masuk &amp; Susun Dokumen
-              </button>
+              {/* TAB 1 & 2: LOGIN AKUN SEKOLAH / ADMIN */}
+              {(loginTab === "account" || loginTab === "admin") && (
+                <form onSubmit={handleAccountLogin} className="space-y-3.5">
+                  <div className="text-left space-y-1 border-b border-white/5 pb-2.5">
+                    <h3 className="font-bold text-base text-white flex items-center gap-2">
+                      <Lock className="w-4 h-4 text-blue-400" />
+                      {loginTab === "admin" ? "Masuk Panel Administrator" : "Masuk Akun Sekolah & Guru"}
+                    </h3>
+                    <p className="text-[11px] text-slate-400 leading-normal">
+                      {loginTab === "admin"
+                        ? "Masukkan username 'admin' dan password Anda untuk mengelola user & password sekolah."
+                        : "Gunakan Username / Kode Sekolah dan Password yang diberikan oleh Admin Sekolah."}
+                    </p>
+                  </div>
 
-              <div className="p-3 bg-blue-950/30 rounded-xl border border-blue-500/10 text-[10px] leading-relaxed text-slate-400 space-y-1">
-                <p className="font-bold text-blue-300">💡 Tips Sinkronisasi Multi-Perangkat:</p>
-                <p>
-                  Sistem menyimpan proyek Anda secara aman di Cloud. Jika berganti perangkat atau browser, cukup masukkan kembali <strong>Nama Lengkap</strong> dan <strong>Nama Sekolah</strong> yang persis sama untuk memuat data Anda kembali.
-                </p>
-              </div>
-            </form>
+                  <div className="space-y-1.5">
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                      Username / Kode Login <span className="text-red-400">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={loginUsername}
+                      onChange={(e) => setLoginUsername(e.target.value)}
+                      placeholder={loginTab === "admin" ? "admin" : "Contoh: sdn1_rancah"}
+                      required
+                      className="w-full p-2.5 border border-white/15 rounded-xl bg-slate-950/80 text-white text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono font-bold placeholder-slate-600 transition-all"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                      Password <span className="text-red-400">*</span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showPassword ? "text" : "password"}
+                        value={loginPassword}
+                        onChange={(e) => setLoginPassword(e.target.value)}
+                        placeholder="••••••••"
+                        required
+                        className="w-full p-2.5 pr-10 border border-white/15 rounded-xl bg-slate-950/80 text-white text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold placeholder-slate-600 transition-all"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-1 rounded-lg transition-colors cursor-pointer"
+                        title={showPassword ? "Sembunyikan Password" : "Tampilkan Password"}
+                      >
+                        {showPassword ? (
+                          <EyeOff className="w-4 h-4 text-amber-400" />
+                        ) : (
+                          <Eye className="w-4 h-4 text-slate-400" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className={`w-full py-3 px-4 font-extrabold text-xs rounded-xl transition shadow-lg flex items-center justify-center gap-2 mt-2 cursor-pointer ${
+                      loginTab === "admin"
+                        ? "bg-purple-600 hover:bg-purple-700 text-white shadow-purple-500/20"
+                        : "bg-gradient-to-r from-blue-500 to-sky-500 hover:from-blue-600 hover:to-sky-600 text-white shadow-blue-500/20"
+                    }`}
+                  >
+                    <Key className="w-4 h-4 text-amber-300" />
+                    {loginTab === "admin" ? "Masuk Panel Admin" : "Masuk Akun Sekolah"}
+                  </button>
+
+                  <div className="p-2.5 bg-blue-950/30 rounded-xl border border-blue-500/10 text-[10px] leading-relaxed text-slate-400">
+                    <p className="font-bold text-blue-300">💡 Bebas Digunakan Bersama (Hingga 13 PC):</p>
+                    <p>
+                      Satu akun sekolah dapat digunakan secara langsung oleh hingga 13 PC/perangkat guru dalam 1 sekolah.
+                    </p>
+                  </div>
+                </form>
+              )}
+
+            </div>
           </div>
 
           {authError && (
@@ -919,7 +1083,7 @@ export default function App() {
       sekolah: "",
       jenjang: Jenjang.SD,
       fase: Fase.A,
-      kelas: "IV",
+      kelas: "1",
       tahunPelajaran: "2026/2027",
       semester: "1",
       tanggalDibuat: new Date().toISOString()
@@ -1057,6 +1221,37 @@ export default function App() {
             onImportBackup={handleImportBackup}
           />
         );
+      case "admin_users":
+        const isSuperAdmin = currentAccount?.role === "admin" && (currentAccount?.id?.toLowerCase() === "admin" || currentAccount?.username?.toLowerCase() === "admin");
+        if (!isSuperAdmin) {
+          return (
+            <DashboardPanel
+              profile={activeProfile}
+              onSaveProfile={handleSaveProfile}
+              completeness={completeness}
+              apiKey={apiKey}
+              onSaveApiKey={(key) => {
+                setApiKey(key);
+                handleSaveProfile({ apiKey: key });
+              }}
+            />
+          );
+        }
+        return (
+          <AdminPanel
+            currentAccount={currentAccount || {
+              id: "admin",
+              username: "admin",
+              password: "",
+              schoolName: "Administrator Utama",
+              teacherName: "Super Admin",
+              maxDevices: 99,
+              role: "admin",
+              status: "active",
+              createdAt: new Date().toISOString()
+            }}
+          />
+        );
       default:
         return <div>Konstruksi panel</div>;
     }
@@ -1078,6 +1273,21 @@ export default function App() {
             </div>
           </div>
 
+          {/* Account Info Badge */}
+          {currentAccount && (
+            <div className="mx-4 mt-3 p-2.5 bg-blue-900/60 rounded-xl border border-white/10 text-xs flex items-center gap-2">
+              <div className="p-1.5 bg-white/10 rounded-lg text-amber-300">
+                <Users className="w-4 h-4" />
+              </div>
+              <div className="overflow-hidden">
+                <span className="font-bold text-white block truncate text-[11px]">{currentAccount.schoolName}</span>
+                <span className="text-[9px] text-blue-200 block truncate">
+                  {(currentAccount.role === "admin" && (currentAccount.id?.toLowerCase() === "admin" || currentAccount.username?.toLowerCase() === "admin")) ? "Super Admin" : `Batas: ${currentAccount.maxDevices} PC`}
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* Quick stats progress bar inside sidebar */}
           <div className="bg-white/10 border border-white/10 p-3.5 rounded-xl m-4">
             <span className="text-[9px] text-white/70 font-bold uppercase tracking-wider block">Progress Kelengkapan</span>
@@ -1095,6 +1305,9 @@ export default function App() {
           {/* Sidebar Navigation */}
           <nav className="space-y-0.5 px-2">
             {[
+              ...((currentAccount?.role === "admin" && (currentAccount.id?.toLowerCase() === "admin" || currentAccount.username?.toLowerCase() === "admin"))
+                ? [{ id: "admin_users", label: "Kelola User & Password", icon: Users }]
+                : []),
               { id: "dashboard", label: "Dashboard Guru", icon: LayoutDashboard },
               { id: "calendar", label: "Kalender Pendidikan", icon: CalendarIcon },
               { id: "schedule", label: "Jadwal Pelajaran", icon: Clock },
@@ -1182,7 +1395,8 @@ export default function App() {
         <header className="h-16 bg-white border-b border-slate-200/80 flex items-center justify-between px-6 md:px-8 shadow-sm shrink-0 print:hidden">
           <div className="flex items-center gap-4">
             <h2 className="text-base md:text-lg font-bold text-slate-800 tracking-tight">
-              {activeTab === "dashboard" ? "Dashboard Guru" : 
+              {activeTab === "admin_users" ? "Kelola User & Password Sekolah" :
+               activeTab === "dashboard" ? "Dashboard Guru" : 
                activeTab === "calendar" ? "Kalender Pendidikan" :
                activeTab === "schedule" ? "Jadwal Pelajaran" :
                activeTab === "tp" ? "Penyusunan TP" :

@@ -33,7 +33,11 @@ const fetchGenerate = async (
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || "Gagal melakukan generate AI.");
+    const rawMsg = errorData.error || "";
+    if (response.status === 429 || rawMsg.toLowerCase().includes("quota") || rawMsg.toLowerCase().includes("429") || rawMsg.toLowerCase().includes("limit exceeded") || rawMsg.toLowerCase().includes("resource_exhausted")) {
+      throw new Error("Batas kuota penggunaan Gemini AI telah tercapai (429 Rate Limit/Quota Exceeded). Mohon tunggu sekitar 1-2 menit sebelum mencoba lagi, atau masukkan Kunci API Gemini milik Anda sendiri di menu Pengaturan/Dashboard Guru.");
+    }
+    throw new Error(rawMsg || `Gagal melakukan generate AI (Status ${response.status}).`);
   }
 
   const data = await response.json();
@@ -206,7 +210,7 @@ Berikan output dalam bentuk JSON yang memiliki properti:
 - mismatchDetected: boolean (true jika ada ketidaksesuaian mata pelajaran antara dokumen/teks CP yang diunggah dengan pilihan mata pelajaran saat ini, false jika sesuai)
 - mismatchDetails: string (penjelasan jika ada mismatch, kosongkan jika tidak ada)
 - capaianPembelajaran: seluruh teks gabungan elemen dan deskripsi CP secara lengkap dan utuh sesuai aslinya (SANGAT PENTING: DILARANG MERANGKUM ATAU MEMOTONG TEKS CP ASLI!).
-- items: daftar objek yang masing-masing memiliki properti 'elemen', 'cp', 'kompetensi', 'konten', dan 'tujuanPembelajaran'.
+- items: daftar objek yang masing-masing memiliki properti 'elemen', 'cp', 'kompetensi', 'konten', 'tujuanPembelajaran', 'materi', dan 'glosarium' (glosarium WAJIB terisi istilah penting dan definisinya, DILARANG kosong/berisi '-').
 
 ATURAN MUTLAK PENYUSUNAN CAPAIAN PEMBELAJARAN (CP):
 1. JANGAN PERNAH MERANGKUM ISI DOKUMEN CP. Pertahankan seluruh isi dokumen asli sebagaimana tertulis tanpa diringkas, disederhanakan, diparafrase, atau dipotong.
@@ -220,6 +224,7 @@ CATATAN RESILIENSI: Jika Anda kesulitan menemukan atau mengidentifikasi Elemen s
 
 - Untuk SETIAP Elemen/CP yang Anda temukan/rumuskan, Anda WAJIB membuat minimal 8 (delapan) butir Tujuan Pembelajaran (TP) di dalam array 'items'.
 - Di properti 'cp' masing-masing item, tulis teks deskripsi CP asli secara lengkap dan utuh untuk elemen terkait (jangan dirangkum, disingkat, atau dipotong!).
+- Di properti 'glosarium' masing-masing item, TULISKAN istilah penting beserta definisi/kata kunci terkait TP tersebut. JANGAN PERNAH mengosongkan glosarium atau memberi tanda '-'.
 Pastikan bahasa Indonesia yang digunakan formal, tepat sasaran, dan mendalam sesuai standar kurikulum nasional.
 `;
 
@@ -239,8 +244,10 @@ Pastikan bahasa Indonesia yang digunakan formal, tepat sasaran, dan mendalam ses
             kompetensi: { type: "STRING" },
             konten: { type: "STRING" },
             tujuanPembelajaran: { type: "STRING" },
+            materi: { type: "STRING" },
+            glosarium: { type: "STRING" },
           },
-          required: ["elemen", "cp", "kompetensi", "konten", "tujuanPembelajaran"],
+          required: ["elemen", "cp", "kompetensi", "konten", "tujuanPembelajaran", "materi", "glosarium"],
         },
       },
     },
@@ -248,7 +255,21 @@ Pastikan bahasa Indonesia yang digunakan formal, tepat sasaran, dan mendalam ses
   };
 
   const jsonStr = await fetchGenerate(prompt, systemInstruction, responseSchema, config, file);
-  return JSON.parse(jsonStr);
+  const parsed = JSON.parse(jsonStr);
+
+  if (parsed.items && Array.isArray(parsed.items)) {
+    parsed.items = parsed.items.map((item: any) => {
+      const mainSubject = item.konten || item.materi || item.kompetensi || item.elemen || "Materi";
+      const fallbackGlosarium = `${mainSubject}: Istilah dan konsep penting terkait ${item.tujuanPembelajaran || item.konten || "pembelajaran"}.`;
+      return {
+        ...item,
+        materi: item.materi || item.konten || "-",
+        glosarium: (item.glosarium && item.glosarium.trim() !== "" && item.glosarium.trim() !== "-") ? item.glosarium : fallbackGlosarium
+      };
+    });
+  }
+
+  return parsed;
 };
 
 export const extractCapaianPembelajaranOnly = async (
@@ -386,6 +407,8 @@ Berikan output dalam bentuk JSON yang memiliki properti:
             kompetensi: { type: "STRING" },
             konten: { type: "STRING" },
             tujuanPembelajaran: { type: "STRING" },
+            materi: { type: "STRING" },
+            glosarium: { type: "STRING" },
           },
           required: ["elemen", "cp", "kompetensi", "konten", "tujuanPembelajaran"],
         },
@@ -1033,4 +1056,59 @@ Ketentuan Teknis Output:
 
   return await fetchGenerate(prompt, systemInstruction, undefined, config);
 };
+
+// 11. Generate / Search Local Wisdom (Kearifan Lokal) by Place/Location
+export const generateKearifanLokal = async (
+  mapel: string,
+  materi: string,
+  daerah: string = "Kabupaten Ciamis",
+  previousText?: string,
+  config?: AICallConfig
+): Promise<string> => {
+  const targetDaerah = (daerah || "").trim() || "Kabupaten Ciamis";
+  const systemInstruction = `Anda adalah pakar kebudayaan dan pendidikan karakter berbasis kearifan lokal daerah ${targetDaerah}. Tugas Anda adalah memberikan contoh kearifan lokal spesifik daerah ${targetDaerah} yang kaya nilai edukatif, sejarah, dan relevan dengan mata pelajaran.`;
+
+  const prompt = `
+Carikan dan formulasikan 1 (satu) contoh kearifan lokal khas daerah "${targetDaerah}" yang sangat menarik, kaya nilai budaya, dan dapat diintegrasikan ke dalam mata pelajaran "${mapel || "Pendidikan"}" serta materi "${materi || "Pembelajaran Karakter"}".
+
+Ketentuan khusus:
+1. Pilihlah salah satu dari berbagai keragaman warisan budaya khas daerah ${targetDaerah} secara spesifik (seperti tradisi, kesenian daerah, situs sejarah, kuliner khas, permainan tradisional, atau filosofi lokal).
+2. Jika ada opsi sebelumnya: "${previousText || ""}", BERIKAN TOPIK KEARIFAN LOKAL YANG BERBEDA DARI SEBELUMNYA.
+3. Tuliskan dalam 2-3 kalimat yang ringkas, padat, dan jelas, lengkap dengan nama kearifan lokalnya dan bagaimana nilai tersebut diintegrasikan dalam pembelajaran.
+Contoh format:
+"Tradisi [Nama Tradisi] di ${targetDaerah}: Mengintegrasikan nilai [nilai karakter/budaya] melalui [kegiatan/diskusi] dalam pembelajaran."
+
+Hanya keluarkan teks deskripsi kearifan lokal tersebut tanpa kata pengantar tambahan.
+`;
+
+  try {
+    const text = await fetchGenerate(prompt, systemInstruction, undefined, config);
+    if (text && text.trim().length > 10) {
+      return text.trim();
+    }
+  } catch (err) {
+    console.warn(`AI generation for local wisdom in ${targetDaerah} failed, using fallback:`, err);
+  }
+
+  const FALLBACKS = [
+    `Kearifan Lokal ${targetDaerah}: Mengintegrasikan nilai gotong royong, kearifan kebudayaan lokal, serta rasa syukur dan pemeliharaan lingkungan ke dalam pembelajaran karakter peserta didik.`,
+    `Kesenian dan Budaya Tradisional ${targetDaerah}: Memanfaatkan media dan simbolisme warisan kebudayaan daerah untuk melatih kreativitas, kebersamaan, dan apresiasi budaya daerah.`,
+    `Situs Sejarah & Tokoh Teladan ${targetDaerah}: Mengambil keteladanan kejujuran, kepemimpinan, dan nilai-nilai luhur sejarah daerah dalam kegiatan diskusi siswa.`
+  ];
+
+  const available = FALLBACKS.filter(item => !previousText || !item.includes(previousText.substring(0, 20)));
+  const choice = available.length > 0 ? available[Math.floor(Math.random() * available.length)] : FALLBACKS[0];
+  return choice;
+};
+
+// Backward compatibility alias for generateKearifanLokalCiamis
+export const generateKearifanLokalCiamis = async (
+  mapel: string,
+  materi: string,
+  previousText?: string,
+  config?: AICallConfig
+): Promise<string> => {
+  return generateKearifanLokal(mapel, materi, "Kabupaten Ciamis", previousText, config);
+};
+
 

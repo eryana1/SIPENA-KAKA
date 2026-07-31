@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { generatePROSEM } from "../lib/ai";
 import { generatePROSEMDocx } from "../lib/docxGenerator";
+import { downloadBlob } from "../lib/downloadHelper";
 import { uploadFileToDrive } from "../lib/drive";
 import { PROSEMItem, PROSEMData, PROTAItem, ATPItem, Jenjang, Fase, CalendarData, JadwalItem } from "../types";
 
@@ -28,51 +29,20 @@ interface ProsemPanelProps {
   onSaveProsem: (data: PROSEMData) => Promise<void>;
   onLoadProta?: (ctx: { mapel: string; kelas: string; fase: Fase }) => Promise<void>;
   onLoadAtp?: (ctx: { mapel: string; kelas: string; fase: Fase }) => Promise<void>;
-  onLoadProsem?: (ctx: { mapel: string; kelas: string; fase: Fase }) => Promise<void>;
+  onLoadProsem?: (ctx: { mapel: string; kelas: string; fase: Fase; semester?: string }) => Promise<void>;
   apiKey?: string;
   driveFolderId?: string;
   accessToken?: string | null;
 }
 
-const isSameKelas = (k1: string, k2: string): boolean => {
-  if (!k1 || !k2) return false;
-  const norm = (k: string) => {
-    const val = k.trim().toUpperCase();
-    const ROMAN_TO_ARABIC: { [key: string]: string } = {
-      "I": "1", "II": "2", "III": "3", "IV": "4", "V": "5", "VI": "6",
-      "VII": "7", "VIII": "8", "IX": "9", "X": "10", "XI": "11", "XII": "12"
-    };
-    return ROMAN_TO_ARABIC[val] || val;
-  };
-  return norm(String(k1)) === norm(String(k2));
-};
-
-const isClassInSameFase = (k1: string, k2: string, currentFase: Fase): boolean => {
-  if (!k1 || !k2 || k1 === "Fase" || k2 === "Fase") return true;
-  if (isSameKelas(k1, k2)) return true;
-  const FASE_CLASSES: { [key: string]: string[] } = {
-    A: ["1", "2", "I", "II"],
-    B: ["3", "4", "III", "IV"],
-    C: ["5", "6", "V", "VI"],
-    D: ["7", "8", "9", "VII", "VIII", "IX"],
-    E: ["10", "X"],
-    F: ["11", "12", "XI", "XII"]
-  };
-  const validClasses = FASE_CLASSES[currentFase] || [];
-  return validClasses.some(c => isSameKelas(c, k1)) && validClasses.some(c => isSameKelas(c, k2));
-};
-
-const getDefaultKelasForFase = (currentFase: Fase) => {
-  switch (currentFase) {
-    case Fase.A: return "1";
-    case Fase.B: return "3";
-    case Fase.C: return "5";
-    case Fase.D: return "7";
-    case Fase.E: return "10";
-    case Fase.F: return "11";
-    default: return "1";
-  }
-};
+import { 
+  isSameKelas, 
+  getDefaultKelasForFase, 
+  getKelasForFase, 
+  getValidClassesForFase, 
+  isClassInSameFase, 
+  normKelas 
+} from "../lib/profileHelper";
 
 export default function ProsemPanel({ 
   profile, 
@@ -92,7 +62,7 @@ export default function ProsemPanel({
   const [semester, setSemester] = useState<"1" | "2">((profile.semester as any) || "1");
   const [mapel, setMapel] = useState("Bahasa Indonesia");
   const [fase, setFase] = useState<Fase>(profile.fase || Fase.A);
-  const [kelas, setKelas] = useState(profile.kelas || "1");
+  const [kelas, setKelas] = useState(() => getKelasForFase(profile.fase || Fase.A, profile.kelas));
   const [items, setItems] = useState<PROSEMItem[]>([]);
   const [jpPerMinggu, setJpPerMinggu] = useState<number>(4);
   
@@ -156,9 +126,9 @@ export default function ProsemPanel({
       onLoadAtp({ mapel, kelas, fase });
     }
     if (onLoadProsem) {
-      onLoadProsem({ mapel, kelas, fase });
+      onLoadProsem({ mapel, kelas, fase, semester });
     }
-  }, [mapel, kelas, fase, profile.tahunPelajaran, profile.semester]);
+  }, [mapel, kelas, fase, semester, profile.tahunPelajaran, profile.semester]);
 
   useEffect(() => {
     if (prosemData) {
@@ -169,26 +139,23 @@ export default function ProsemPanel({
         String(prosemData.semester) !== String(semester)
       );
 
-      if (!isStale) {
+      if (!isStale && prosemData.items && prosemData.items.length > 0) {
         const loadedItems = (prosemData.items || []).map(item => {
           const matchingProta = savedProtas.find(p => p.tujuanPembelajaran === item.tujuanPembelajaran);
           const matchingAtp = savedAtps.find(atp => atp.tujuanPembelajaran === item.tujuanPembelajaran);
           return {
             ...item,
-            mapel: item.mapel || prosemData.mapel || "Bahasa Indonesia",
-            semester: item.semester || prosemData.semester || "1",
+            mapel: item.mapel || prosemData.mapel || mapel,
+            semester: item.semester || prosemData.semester || semester,
             cp: item.cp || matchingProta?.cp || matchingAtp?.cp || "",
-            elemen: item.elemen || matchingProta?.elemen || matchingAtp?.elemen || ""
+            elemen: item.elemen || matchingProta?.elemen || matchingAtp?.elemen || "",
+            weeks: item.weeks || {}
           };
         });
         setItems(loadedItems);
-      } else {
-        setItems([]);
       }
-    } else {
-      setItems([]);
     }
-  }, [prosemData, savedProtas, savedAtps, mapel, kelas, fase, semester]);
+  }, [prosemData, mapel, kelas, fase, semester]);
 
   // Reconcile and auto-initialize PROSEM items from PROTA dynamically, fallback to ATP if empty
   useEffect(() => {
@@ -203,11 +170,17 @@ export default function ProsemPanel({
         const otherItems = prev.filter(item => !(item.mapel?.toLowerCase().trim() === targetMapel && String(item.semester) === String(semester)));
         const currentItems = prev.filter(item => item.mapel?.toLowerCase().trim() === targetMapel && String(item.semester) === String(semester));
 
+        // Preserved source: check both current state items AND prosemData items so checkmarks (weeks) are NEVER lost
+        const preservedSource = [...currentItems, ...(prosemData?.items || [])];
+
         const seenAtpIds = new Set<string>();
 
         const reconciledItems: PROSEMItem[] = semesterProtas.map((prota, idx) => {
-          const existing = currentItems.find(it => it.atpId === prota.atpId) || 
-                           currentItems.find(it => it.tujuanPembelajaran === prota.tujuanPembelajaran);
+          const existing = preservedSource.find(it => 
+            (prota.atpId && it.atpId === prota.atpId) ||
+            (prota.tujuanPembelajaran && it.tujuanPembelajaran === prota.tujuanPembelajaran) ||
+            (prota.tujuanPembelajaran && it.tujuanPembelajaran?.trim().toLowerCase() === prota.tujuanPembelajaran?.trim().toLowerCase())
+          );
           
           let candidateId = prota.atpId || existing?.atpId || `prosem-atp-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 7)}`;
           
@@ -233,31 +206,41 @@ export default function ProsemPanel({
         return [...otherItems, ...reconciledItems];
       });
     } else {
-      // If there are no PROTA items, do NOT automatically wipe out existing items!
-      // This preserves any previously loaded or AI-generated PROSEM items.
       setItems(prev => {
         const currentItems = prev.filter(item => item.mapel?.toLowerCase().trim() === targetMapel && String(item.semester) === String(semester));
         if (currentItems.length > 0) {
           return prev;
         }
 
-        // Fallback to active ATP items if we have them, so the user sees their learning objectives
+        if (prosemData?.items && prosemData.items.length > 0 && prosemData.mapel?.toLowerCase().trim() === targetMapel) {
+          return prev;
+        }
+
         const activeAtps = savedAtps.filter(atp => {
           if (atp.mapel?.toLowerCase().trim() !== targetMapel) return false;
           const atpKelas = atp.kelas || getDefaultKelasForFase(fase);
           return isClassInSameFase(atpKelas, kelas, fase);
         });
+
         if (activeAtps.length > 0) {
-          const fallbackItems: PROSEMItem[] = activeAtps.map((atp, idx) => ({
-            atpId: atp.tpId || `prosem-atp-fallback-${idx}-${Math.random().toString(36).substring(2, 5)}`,
-            mapel: mapel,
-            semester: semester,
-            cp: atp.cp || "",
-            elemen: atp.elemen || "",
-            tujuanPembelajaran: atp.tujuanPembelajaran,
-            alokasiWaktu: atp.perkiraanJam || 2,
-            weeks: {}
-          }));
+          const preservedSource = prosemData?.items || [];
+          const fallbackItems: PROSEMItem[] = activeAtps.map((atp, idx) => {
+            const existing = preservedSource.find(it =>
+              (atp.tpId && it.atpId === atp.tpId) ||
+              (atp.tujuanPembelajaran && it.tujuanPembelajaran === atp.tujuanPembelajaran) ||
+              (atp.tujuanPembelajaran && it.tujuanPembelajaran?.trim().toLowerCase() === atp.tujuanPembelajaran?.trim().toLowerCase())
+            );
+            return {
+              atpId: atp.tpId || existing?.atpId || `prosem-atp-fallback-${idx}-${Math.random().toString(36).substring(2, 5)}`,
+              mapel: mapel,
+              semester: semester,
+              cp: atp.cp || "",
+              elemen: atp.elemen || "",
+              tujuanPembelajaran: atp.tujuanPembelajaran,
+              alokasiWaktu: atp.perkiraanJam || 2,
+              weeks: existing?.weeks || {}
+            };
+          });
           const otherItems = prev.filter(item => !(item.mapel?.toLowerCase().trim() === targetMapel && String(item.semester) === String(semester)));
           return [...otherItems, ...fallbackItems];
         }
@@ -265,7 +248,7 @@ export default function ProsemPanel({
         return prev;
       });
     }
-  }, [mapel, semester, savedProtas, savedAtps]);
+  }, [mapel, semester, savedProtas, savedAtps, prosemData]);
 
   useEffect(() => {
     if (mapelPresets[currentJenjang] && !mapelPresets[currentJenjang].includes(mapel) && mapel !== "") {
@@ -526,48 +509,119 @@ export default function ProsemPanel({
       }));
     }
 
-    // List of weeks across current months
-    const allWeeks = currentMonths.flatMap(m => [1, 2, 3, 4].map(w => ({ month: m, week: w, key: `${m}-${w}` })));
-    let weekPointer = 0;
+    const n = currentItems.length;
+    if (n === 0) return;
 
-    const updatedItems = currentItems.map(item => {
+    // Target active months: Semester 1 programs learning up to November Week 4 (reserving Desember for exams/holidays)
+    // Semester 2 programs learning up to Mei Week 4 (reserving Juni for exams/holidays)
+    const targetMonths = String(semester) === "1"
+      ? ["Juli", "Agustus", "September", "Oktober", "November"]
+      : ["Januari", "Februari", "Maret", "April", "Mei"];
+
+    const targetWeeks = targetMonths.flatMap(m => [1, 2, 3, 4].map(w => ({ month: m, week: w, key: `${m}-${w}` })));
+
+    const totalJp = currentItems.reduce((sum, item) => sum + (item.alokasiWaktu || 2), 0);
+
+    let assignedWeeksCount: number[] = [];
+
+    if (n <= targetWeeks.length) {
+      let rawCounts = currentItems.map(item => {
+        const weight = (item.alokasiWaktu || 2) / (totalJp || 1);
+        return Math.max(1, Math.round(weight * targetWeeks.length));
+      });
+
+      let currentSum = rawCounts.reduce((a, b) => a + b, 0);
+
+      while (currentSum !== targetWeeks.length) {
+        if (currentSum < targetWeeks.length) {
+          let minIdx = 0;
+          for (let i = 1; i < n; i++) {
+            if (rawCounts[i] < rawCounts[minIdx]) minIdx = i;
+          }
+          rawCounts[minIdx]++;
+          currentSum++;
+        } else {
+          let maxIdx = -1;
+          for (let i = 0; i < n; i++) {
+            if (rawCounts[i] > 1 && (maxIdx === -1 || rawCounts[i] > rawCounts[maxIdx])) {
+              maxIdx = i;
+            }
+          }
+          if (maxIdx !== -1) {
+            rawCounts[maxIdx]--;
+            currentSum--;
+          } else {
+            break;
+          }
+        }
+      }
+      assignedWeeksCount = rawCounts;
+    } else {
+      assignedWeeksCount = currentItems.map(() => 1);
+    }
+
+    let weekPointer = 0;
+    const updatedItems = currentItems.map((item, idx) => {
       const weeks: { [key: string]: boolean } = {};
-      const weeksNeeded = Math.ceil(item.alokasiWaktu / jpPerMinggu) || 1;
-      for (let i = 0; i < weeksNeeded; i++) {
-        if (weekPointer < allWeeks.length) {
-          const currentWeek = allWeeks[weekPointer];
-          // Skip standard semester-end holiday week (usually week 4 of December/June)
-          if ((currentWeek.month === "Desember" && currentWeek.week === 4) || (currentWeek.month === "Juni" && currentWeek.week === 4)) {
-            weekPointer++;
-          }
-          if (weekPointer < allWeeks.length) {
-            weeks[allWeeks[weekPointer].key] = true;
-            weekPointer++;
-          }
+      const numWeeks = assignedWeeksCount[idx] || 1;
+
+      for (let w = 0; w < numWeeks; w++) {
+        if (weekPointer < targetWeeks.length) {
+          weeks[targetWeeks[weekPointer].key] = true;
+          weekPointer++;
+        } else {
+          weeks[targetWeeks[targetWeeks.length - 1].key] = true;
         }
       }
       return { ...item, weeks };
     });
 
-    setItems(prev => {
-      const remaining = prev.filter(item => !(item.mapel?.toLowerCase().trim() === targetMapel && String(item.semester) === String(semester)));
-      return [...remaining, ...updatedItems];
-    });
+    const remaining = items.filter(item => !(item.mapel?.toLowerCase().trim() === targetMapel && String(item.semester) === String(semester)));
+    const mergedProsem = [...remaining, ...updatedItems];
 
-    setMsg("⚡ Sukses! Pemetaan minggu belajar instan berhasil diselesaikan secara sistematis. Anda sekarang dapat menyesuaikannya sesuka hati.");
+    setItems(mergedProsem);
+    autoPersistProsem(mergedProsem);
+
+    setMsg(
+      String(semester) === "1"
+        ? `⚡ Sukses! Seluruh ${n} Tujuan Pembelajaran (TP) berhasil dipetakan secara instan dari Juli sampai November Minggu ke-4!`
+        : `⚡ Sukses! Seluruh ${n} Tujuan Pembelajaran (TP) berhasil dipetakan secara instan dari Januari sampai Mei Minggu ke-4!`
+    );
     setTimeout(() => setMsg(""), 5000);
+  };
+
+  const autoPersistProsem = (updatedItems: PROSEMItem[]) => {
+    const payload: PROSEMData = {
+      semester,
+      mapel,
+      fase,
+      kelas,
+      items: updatedItems,
+      months: currentMonths,
+      weeksPerMonth: 4,
+      createdAt: new Date().toISOString(),
+      tahunPelajaran: profile.tahunPelajaran
+    } as any;
+    onSaveProsem(payload).catch(err => console.warn("Auto-save PROSEM failed:", err));
   };
 
   const handleToggleWeek = (indexInDisplayed: number, month: string, weekNum: number) => {
     const targetItem = displayedItems[indexInDisplayed];
+    if (!targetItem) return;
+
     setItems(prev => {
       const copy = [...prev];
-      const absoluteIndex = copy.findIndex(it => it.atpId === targetItem.atpId && it.mapel === mapel && it.semester === semester);
+      const absoluteIndex = copy.findIndex(it => 
+        it === targetItem ||
+        (it.atpId && targetItem.atpId && it.atpId === targetItem.atpId) ||
+        (it.tujuanPembelajaran && targetItem.tujuanPembelajaran && it.tujuanPembelajaran.trim().toLowerCase() === targetItem.tujuanPembelajaran.trim().toLowerCase())
+      );
       if (absoluteIndex !== -1) {
         const weekKey = `${month}-${weekNum}`;
-        const currentWeeks = { ...copy[absoluteIndex].weeks };
+        const currentWeeks = { ...(copy[absoluteIndex].weeks || {}) };
         currentWeeks[weekKey] = !currentWeeks[weekKey];
         copy[absoluteIndex] = { ...copy[absoluteIndex], weeks: currentWeeks };
+        autoPersistProsem(copy);
       }
       return copy;
     });
@@ -606,8 +660,7 @@ export default function ProsemPanel({
       const blob = await generatePROSEMDocx(profile, mapel, currentMonths, displayedItems, kelas);
       const filename = `Program Semester_${mapel}_Sm${semester}.docx`;
       
-      const fileSaver = await import("file-saver");
-      fileSaver.saveAs(blob, filename);
+      downloadBlob(blob, filename);
       setMsg("✅ File Program Semester (.docx) berhasil dibuat dan diunduh!");
     } catch (error: any) {
       setMsg(`🔴 Gagal mengunduh berkas Word: ${error.message}`);
@@ -668,13 +721,7 @@ export default function ProsemPanel({
                 onChange={(e) => {
                   const newFase = e.target.value as Fase;
                   setFase(newFase);
-                  // Auto-set default kelas appropriate for the chosen Fase
-                  if (newFase === Fase.A) setKelas("1");
-                  else if (newFase === Fase.B) setKelas("3");
-                  else if (newFase === Fase.C) setKelas("5");
-                  else if (newFase === Fase.D) setKelas("7");
-                  else if (newFase === Fase.E) setKelas("10");
-                  else if (newFase === Fase.F) setKelas("11");
+                  setKelas(getKelasForFase(newFase, kelas));
                 }}
                 className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
@@ -686,25 +733,15 @@ export default function ProsemPanel({
             <div>
               <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Kelas</label>
               <select
-                value={kelas}
+                value={normKelas(kelas)}
                 onChange={(e) => setKelas(e.target.value)}
                 className="w-full p-2.5 border border-slate-300 rounded-lg bg-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 {(() => {
-                  const getKelasOptionsForFase = (currentFase: Fase) => {
-                    switch (currentFase) {
-                      case Fase.A: return ["1", "2", "I", "II"];
-                      case Fase.B: return ["3", "4", "III", "IV"];
-                      case Fase.C: return ["5", "6", "V", "VI"];
-                      case Fase.D: return ["7", "8", "9", "VII", "VIII", "IX"];
-                      case Fase.E: return ["10", "X"];
-                      case Fase.F: return ["11", "12", "XI", "XII"];
-                      default: return ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
-                    }
-                  };
-                  const options = [...getKelasOptionsForFase(fase)];
-                  if (kelas && !options.includes(kelas)) {
-                    options.push(kelas);
+                  const options = [...getValidClassesForFase(fase)];
+                  const currentNorm = normKelas(kelas);
+                  if (currentNorm && !options.includes(currentNorm)) {
+                    options.push(currentNorm);
                   }
                   return options.map((k) => (
                     <option key={k} value={k}>Kelas {k}</option>

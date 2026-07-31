@@ -1,20 +1,35 @@
 import { Fase } from "../types";
 
-export const isSameKelas = (k1: string, k2: string): boolean => {
-  if (!k1 || !k2) return false;
-  const norm = (k: string) => {
-    const val = k.trim().toUpperCase();
-    const ROMAN_TO_ARABIC: { [key: string]: string } = {
-      "I": "1", "II": "2", "III": "3", "IV": "4", "V": "5", "VI": "6",
-      "VII": "7", "VIII": "8", "IX": "9", "X": "10", "XI": "11", "XII": "12",
-      "Satu": "1", "Dua": "2", "Tiga": "3", "Empat": "4", "Lima": "5", "Enam": "6"
-    };
-    return ROMAN_TO_ARABIC[val] || val;
+export const normKelas = (k: string | number): string => {
+  if (!k) return "1";
+  const val = String(k).trim().toUpperCase();
+  const ROMAN_TO_ARABIC: { [key: string]: string } = {
+    "I": "1", "II": "2", "III": "3", "IV": "4", "V": "5", "VI": "6",
+    "VII": "7", "VIII": "8", "IX": "9", "X": "10", "XI": "11", "XII": "12",
+    "SATU": "1", "DUA": "2", "TIGA": "3", "EMPAT": "4", "LIMA": "5", "ENAM": "6"
   };
-  return norm(String(k1)) === norm(String(k2));
+  return ROMAN_TO_ARABIC[val] || val;
 };
 
-export const getDefaultKelasForFase = (currentFase: Fase) => {
+export const isSameKelas = (k1: string, k2: string): boolean => {
+  if (!k1 || !k2) return false;
+  return normKelas(k1) === normKelas(k2);
+};
+
+export const FASE_CLASSES: { [key in Fase]: string[] } = {
+  [Fase.A]: ["1", "2"],
+  [Fase.B]: ["3", "4"],
+  [Fase.C]: ["5", "6"],
+  [Fase.D]: ["7", "8", "9"],
+  [Fase.E]: ["10"],
+  [Fase.F]: ["11", "12"]
+};
+
+export const getValidClassesForFase = (currentFase: Fase): string[] => {
+  return FASE_CLASSES[currentFase] || ["1", "2"];
+};
+
+export const getDefaultKelasForFase = (currentFase: Fase): string => {
   switch (currentFase) {
     case Fase.A: return "1";
     case Fase.B: return "3";
@@ -24,6 +39,25 @@ export const getDefaultKelasForFase = (currentFase: Fase) => {
     case Fase.F: return "11";
     default: return "1";
   }
+};
+
+export const getKelasForFase = (currentFase: Fase, inputKelas?: string): string => {
+  const valid = getValidClassesForFase(currentFase);
+  if (inputKelas) {
+    const normIn = normKelas(inputKelas);
+    const isValid = valid.some(c => normKelas(c) === normIn);
+    if (isValid) return normIn;
+  }
+  return getDefaultKelasForFase(currentFase);
+};
+
+export const isClassInSameFase = (k1: string, k2: string, currentFase: Fase): boolean => {
+  if (!k1 || !k2 || k1.toUpperCase() === "FASE" || k2.toUpperCase() === "FASE") return true;
+  if (isSameKelas(k1, k2)) return true;
+  const valid = getValidClassesForFase(currentFase);
+  const n1 = normKelas(k1);
+  const n2 = normKelas(k2);
+  return valid.includes(n1) && valid.includes(n2);
 };
 
 export interface TeacherDetails {

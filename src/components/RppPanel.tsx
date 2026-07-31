@@ -16,11 +16,14 @@ import {
   FileText,
   AlertCircle,
   FolderSync,
-  CheckCircle2
+  CheckCircle2,
+  Compass,
+  Globe
 } from "lucide-react";
 import TiptapEditor from "./TiptapEditor";
-import { generateRPPMendalam, generateIndividualLampiran } from "../lib/ai";
+import { generateRPPMendalam, generateIndividualLampiran, generateKearifanLokal, generateKearifanLokalCiamis } from "../lib/ai";
 import { generateRPPDocx, generateIndividualLampiranDocx } from "../lib/docxGenerator";
+import { downloadBlob } from "../lib/downloadHelper";
 import { uploadFileToDrive } from "../lib/drive";
 import { Fase, RPPData, VersionHistory, Jenjang, TPItem, ATPItem, PROSEMData } from "../types";
 import { saveDocumentToDb } from "../lib/firebase";
@@ -34,7 +37,7 @@ interface RppPanelProps {
   onSaveRpp: (rpp: RPPData) => Promise<void>;
   onLoadTp?: (ctx: { mapel: string; kelas: string; fase: Fase }) => Promise<void>;
   onLoadAtp?: (ctx: { mapel: string; kelas: string; fase: Fase }) => Promise<void>;
-  onLoadProsem?: (ctx: { mapel: string; kelas: string; fase: Fase }) => Promise<void>;
+  onLoadProsem?: (ctx: { mapel: string; kelas: string; fase: Fase; semester?: string }) => Promise<void>;
   onLoadRppList?: (ctx: { mapel: string; kelas: string; fase: Fase }) => Promise<void>;
   savedVersions: VersionHistory[];
   onSaveVersion: (ver: VersionHistory) => Promise<void>;
@@ -73,17 +76,19 @@ const FASE_CLASSES: { [key: string]: string[] } = {
   F: ["11", "12"]
 };
 
+const normKelas = (k: string | number): string => {
+  if (!k) return "1";
+  const val = String(k).trim().toUpperCase();
+  const ROMAN_TO_ARABIC: { [key: string]: string } = {
+    "I": "1", "II": "2", "III": "3", "IV": "4", "V": "5", "VI": "6",
+    "VII": "7", "VIII": "8", "IX": "9", "X": "10", "XI": "11", "XII": "12"
+  };
+  return ROMAN_TO_ARABIC[val] || val;
+};
+
 const isSameKelas = (k1: string, k2: string): boolean => {
   if (!k1 || !k2) return false;
-  const norm = (k: string) => {
-    const val = k.trim().toUpperCase();
-    const ROMAN_TO_ARABIC: { [key: string]: string } = {
-      "I": "1", "II": "2", "III": "3", "IV": "4", "V": "5", "VI": "6",
-      "VII": "7", "VIII": "8", "IX": "9", "X": "10", "XI": "11", "XII": "12"
-    };
-    return ROMAN_TO_ARABIC[val] || val;
-  };
-  return norm(String(k1)) === norm(String(k2));
+  return normKelas(k1) === normKelas(k2);
 };
 
 const isClassInSameFase = (k1: string, k2: string, faseVal: string) => {
@@ -178,6 +183,13 @@ export default function RppPanel({
     createdAt: new Date().toISOString()
   });
 
+  const normSem = (s: string | number | undefined | null): string => {
+    if (!s) return "1";
+    const str = String(s).trim();
+    if (str.includes("2")) return "2";
+    return "1";
+  };
+
   const filteredTps = savedTps.filter(t => 
     t.mapel?.toLowerCase().trim() === mapel.toLowerCase().trim()
   );
@@ -186,22 +198,71 @@ export default function RppPanel({
     (!a.kelas || isClassInSameFase(a.kelas, form.kelas, form.fase))
   );
 
-  const currentProsemItems = prosemData && Array.isArray(prosemData.items)
-    ? (() => {
+  const currentProsemItems = (() => {
+    const targetMapel = mapel.toLowerCase().trim();
+    const targetKelas = normKelas(form.kelas);
+    const targetSem = normSem(form.semester);
+
+    if (prosemData && Array.isArray(prosemData.items) && prosemData.items.length > 0) {
+      const prosemMapel = (prosemData.mapel || "").toLowerCase().trim();
+      const prosemKls = prosemData.kelas || "";
+      
+      const mapelMatch = !prosemMapel || prosemMapel === targetMapel || prosemMapel.includes(targetMapel) || targetMapel.includes(prosemMapel);
+      const classMatch = !prosemKls || prosemKls.toUpperCase() === "FASE" || isClassInSameFase(prosemKls, targetKelas, form.fase);
+
+      if (mapelMatch && classMatch) {
         const mapelItems = prosemData.items.filter((item: any) => {
           const itemMapel = (item.mapel || prosemData.mapel || "").toLowerCase().trim();
-          return itemMapel === mapel.toLowerCase().trim();
-        });
-        
-        const semItems = mapelItems.filter((item: any) => {
-          const itemSem = String(item.semester || prosemData.semester || "1").trim();
-          const targetSem = String(form.semester || "1").trim();
-          return itemSem === targetSem || itemSem.includes(targetSem) || targetSem.includes(itemSem);
+          return !itemMapel || itemMapel === targetMapel || itemMapel.includes(targetMapel) || targetMapel.includes(itemMapel);
         });
 
-        return semItems.length > 0 ? semItems : mapelItems;
-      })()
-    : [];
+        const classItems = mapelItems.filter((item: any) => {
+          const itemKls = item.kelas || prosemData.kelas || "";
+          if (!itemKls || itemKls.toUpperCase() === "FASE") return true;
+          return isClassInSameFase(itemKls, targetKelas, form.fase);
+        });
+
+        const semItems = classItems.filter((item: any) => {
+          const itemSem = normSem(item.semester || prosemData.semester);
+          return itemSem === targetSem;
+        });
+
+        if (semItems.length > 0) return semItems;
+        if (classItems.length > 0) return classItems;
+        if (mapelItems.length > 0) return mapelItems;
+      }
+    }
+
+    // Fallback 1: Use ATP items if available for the same mapel & class/fase
+    if (filteredAtps.length > 0) {
+      return filteredAtps.map((a: any, idx: number) => ({
+        atpId: a.atpId || a.id || `atp-fallback-${idx}`,
+        mapel: a.mapel || mapel,
+        semester: form.semester,
+        cp: a.cp || "",
+        elemen: a.elemen || "",
+        tujuanPembelajaran: a.tujuanPembelajaran || "",
+        topik: a.materiInti || a.topik || "",
+        alokasiWaktu: a.alokasiWaktu || 2
+      }));
+    }
+
+    // Fallback 2: Use TP items if available
+    if (filteredTps.length > 0) {
+      return filteredTps.map((t: any, idx: number) => ({
+        atpId: t.id || `tp-fallback-${idx}`,
+        mapel: t.mapel || mapel,
+        semester: form.semester,
+        cp: t.cp || "",
+        elemen: t.elemen || "",
+        tujuanPembelajaran: t.tujuanPembelajaran || "",
+        topik: t.materi || "",
+        alokasiWaktu: 2
+      }));
+    }
+
+    return [];
+  })();
 
   const [loading, setLoading] = useState(false);
   const [savingState, setSavingState] = useState<"idle" | "saving" | "saved">("idle");
@@ -212,9 +273,9 @@ export default function RppPanel({
   const [editorHtml, setEditorHtml] = useState("");
 
   // Validation
-  const activeTpMatched = currentProsemItems.some(item => 
-    (item.tujuanPembelajaran || "").toLowerCase().trim() === (form.tujuanPembelajaran || "").toLowerCase().trim()
-  );
+  const activeTpMatched = currentProsemItems.length > 0 
+    ? (!!form.tujuanPembelajaran && form.tujuanPembelajaran.trim().length > 0)
+    : true;
   const hasRppContent = editorHtml && editorHtml.trim().length > 100;
   const isRppValid = currentProsemItems.length > 0 && activeTpMatched && hasRppContent;
 
@@ -233,6 +294,40 @@ export default function RppPanel({
   const [uploadingCp, setUploadingCp] = useState(false);
   const [uploadedFileName, setUploadedFileName] = useState("");
 
+  // Kearifan Lokal generator by Location
+  const [tempatKearifanLokal, setTempatKearifanLokal] = useState(profile.kabupaten || profile.kota || "Kab. Ciamis");
+  const [isGeneratingCiamis, setIsGeneratingCiamis] = useState(false);
+
+  const handleGenerateLocalWisdom = async () => {
+    setIsGeneratingCiamis(true);
+    setMsg(`🌐 AI sedang mencari & memformulasikan kearifan lokal ${tempatKearifanLokal || "daerah"}...`);
+    try {
+      const wisdomText = await generateKearifanLokal(
+        mapel,
+        form.materi || "",
+        tempatKearifanLokal,
+        form.kearifanLokal || "",
+        { apiKey }
+      );
+
+      setForm(prev => {
+        const updated = { ...prev, kearifanLokal: wisdomText };
+        const htmlSummary = buildRppHtmlSummary(updated, profile);
+        updated.fullContentHtml = htmlSummary;
+        setEditorHtml(htmlSummary);
+        return updated;
+      });
+
+      setMsg(`✅ Kearifan Lokal ${tempatKearifanLokal} berhasil dimuat! Klik lagi untuk berganti topik lainnya.`);
+    } catch (err) {
+      console.error("Error generating local wisdom:", err);
+      setMsg("⚠️ Gagal memuat kearifan lokal. Silakan coba lagi.");
+    } finally {
+      setIsGeneratingCiamis(false);
+      setTimeout(() => setMsg(""), 4000);
+    }
+  };
+
   // Auto-save ref to avoid stale state in interval
   const formRef = useRef(form);
   useEffect(() => {
@@ -248,12 +343,12 @@ export default function RppPanel({
       onLoadAtp({ mapel, kelas: form.kelas, fase: form.fase });
     }
     if (onLoadProsem) {
-      onLoadProsem({ mapel, kelas: form.kelas, fase: form.fase });
+      onLoadProsem({ mapel, kelas: form.kelas, fase: form.fase, semester: form.semester });
     }
     if (onLoadRppList) {
       onLoadRppList({ mapel, kelas: form.kelas, fase: form.fase });
     }
-  }, [mapel, form.kelas, form.fase, profile.tahunPelajaran, profile.semester]);
+  }, [mapel, form.kelas, form.fase, form.semester, profile.tahunPelajaran, profile.semester]);
 
   // Handle subject switching: Load existing RPP from list or initialize a default RPP
   useEffect(() => {
@@ -473,11 +568,15 @@ export default function RppPanel({
       
       if (name === "fase") {
         const validClasses = FASE_CLASSES[value] || [];
-        if (validClasses.length > 0 && !validClasses.includes(prev.kelas || "")) {
+        if (validClasses.length > 0 && !validClasses.includes(normKelas(prev.kelas || ""))) {
           updated.kelas = validClasses[0];
         }
       }
       
+      if (name === "kelas") {
+        updated.kelas = normKelas(value);
+      }
+
       const htmlSummary = buildRppHtmlSummary(updated, profile);
       updated.fullContentHtml = htmlSummary;
       setEditorHtml(htmlSummary);
@@ -721,8 +820,7 @@ export default function RppPanel({
       const blob = await generateRPPDocx(profile, { ...form, fullContentHtml: editorHtml });
       const filename = `RPP_Mendalam_${form.mapel}_Pertemuan_${form.pertemuan}.docx`;
       
-      const fileSaver = await import("file-saver");
-      fileSaver.saveAs(blob, filename);
+      downloadBlob(blob, filename);
       setMsg("✅ Berkas RPP (.docx) berhasil dibuat dan diunduh!");
     } catch (error: any) {
       setMsg(`🔴 Gagal mengunduh RPP Word: ${error.message}`);
@@ -830,8 +928,7 @@ export default function RppPanel({
       );
       
       const filename = `Lampiran_${selectedLampiranType}_${form.mapel}_Pertemuan_${form.pertemuan}.docx`;
-      const fileSaver = await import("file-saver");
-      fileSaver.saveAs(blob, filename);
+      downloadBlob(blob, filename);
       setMsg(`✅ Berkas Lampiran ${selectedLampiranType} (.docx) berhasil dibuat dan diunduh!`);
     } catch (error: any) {
       setMsg(`🔴 Gagal mengunduh Lampiran Word: ${error.message}`);
@@ -1040,7 +1137,7 @@ export default function RppPanel({
                     </select>
                     <select
                       name="kelas"
-                      value={form.kelas}
+                      value={normKelas(form.kelas)}
                       onChange={handleInputChange}
                       className="w-1/2 p-2.5 border border-slate-300 rounded-lg text-xs bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 font-semibold"
                     >
@@ -1117,13 +1214,13 @@ export default function RppPanel({
                 </div>
               </div>
 
-              {/* PROSEM Integration helper */}
-              {currentProsemItems.length > 0 && (
-                <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl space-y-2">
+              {/* TP Selection directly from Program Semester (PROSEM) for selected Class & Semester */}
+              {currentProsemItems.length > 0 ? (
+                <div className="p-3.5 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-2">
                   <div className="flex justify-between items-center flex-wrap gap-2">
-                    <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider flex items-center gap-1.5">
-                      <Grid className="w-3.5 h-3.5" />
-                      Integrasi Program Semester (PROSEM)
+                    <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+                      Daftar TP dari Pemetaan Program Semester (PROSEM)
                     </span>
                     <div className="flex items-center gap-2">
                       <button
@@ -1149,36 +1246,40 @@ export default function RppPanel({
                             setEditorHtml(htmlSummary);
                             return updated;
                           });
-                          setMsg(`✅ Berhasil memuat seluruh (${currentProsemItems.length}) Tujuan Pembelajaran dari PROSEM!`);
+                          setMsg(`✅ Memuat seluruh (${currentProsemItems.length}) Tujuan Pembelajaran dari Program Semester!`);
                           setTimeout(() => setMsg(""), 3500);
                         }}
-                        className="text-[9.5px] font-bold text-emerald-800 bg-emerald-200/80 hover:bg-emerald-300 px-2.5 py-1 rounded-md transition shadow-xs flex items-center gap-1 cursor-pointer"
+                        className="text-[9.5px] font-bold text-emerald-800 bg-emerald-200/90 hover:bg-emerald-300 px-2.5 py-1 rounded-md transition shadow-xs flex items-center gap-1 cursor-pointer"
                       >
-                        ⚡ Muat Semua TP ({currentProsemItems.length})
+                        ⚡ Pilih Semua TP PROSEM ({currentProsemItems.length})
                       </button>
                       <span className="text-[9px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full">
-                        {currentProsemItems.length} TP Tersinkronisasi
+                        Kelas {normKelas(form.kelas)} - Semester {form.semester} ({currentProsemItems.length} TP)
                       </span>
                     </div>
                   </div>
                   <p className="text-[10.5px] text-slate-600 leading-normal">
-                    Ditemukan data pembelajaran mingguan di Program Semester untuk Mata Pelajaran <strong>{mapel}</strong>. Klik TP individual untuk memilih/menambah atau gunakan tombol <strong>Muat Semua TP</strong>:
+                    Pilih Tujuan Pembelajaran (TP) dari Program Semester untuk Kelas {normKelas(form.kelas)} Semester {form.semester}:
                   </p>
-                  <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto pr-1">
+                  <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto pr-1">
                     {currentProsemItems.map((item: any, idx: number) => {
-                      const isSelected = form.tujuanPembelajaran ? form.tujuanPembelajaran.includes(item.tujuanPembelajaran) : false;
+                      const isSelected = form.tujuanPembelajaran ? form.tujuanPembelajaran.includes(item.tujuanPembelajaran.trim()) : false;
                       return (
                         <button
-                          key={item.atpId || `prosem-rpp-${idx}`}
+                          key={item.atpId || `prosem-tp-${idx}`}
                           type="button"
                           onClick={() => {
                             setForm(prev => {
                               let newTps = prev.tujuanPembelajaran || "";
+                              let newCps = prev.cp || "";
+                              let newElemen = prev.elemen || "";
+                              let newMateris = prev.materi || "";
                               const cleanTp = item.tujuanPembelajaran.trim();
+
                               if (isSelected) {
                                 const lines = newTps.split('\n').map(l => l.replace(/^-\s*/, '').trim());
-                                const filtered = lines.filter(l => l !== cleanTp && l !== "");
-                                newTps = filtered.length > 0 ? filtered.map(l => `- ${l}`).join('\n') : "";
+                                const filteredLines = lines.filter(l => l !== cleanTp && l !== "");
+                                newTps = filteredLines.length > 0 ? filteredLines.map(l => `- ${l}`).join('\n') : "";
                               } else {
                                 if (newTps.trim()) {
                                   const lines = newTps.split('\n').map(l => l.replace(/^-\s*/, '').trim()).filter(Boolean);
@@ -1189,23 +1290,55 @@ export default function RppPanel({
                                 } else {
                                   newTps = `- ${cleanTp}`;
                                 }
+
+                                if (item.cp) {
+                                  const cpClean = item.cp.trim();
+                                  if (newCps) {
+                                    const cpLines = newCps.split('\n').map(l => l.trim()).filter(Boolean);
+                                    if (!cpLines.includes(cpClean)) {
+                                      cpLines.push(cpClean);
+                                    }
+                                    newCps = cpLines.join('\n');
+                                  } else {
+                                    newCps = cpClean;
+                                  }
+                                }
+
+                                if (item.elemen) {
+                                  newElemen = item.elemen.trim();
+                                }
+
+                                const matClean = (item.topik || "").trim();
+                                if (matClean) {
+                                  if (newMateris) {
+                                    const mats = newMateris.split(',').map(m => m.trim()).filter(Boolean);
+                                    if (!mats.includes(matClean)) {
+                                      mats.push(matClean);
+                                    }
+                                    newMateris = mats.join(', ');
+                                  } else {
+                                    newMateris = matClean;
+                                  }
+                                }
                               }
+
                               const updated = {
                                 ...prev,
                                 tujuanPembelajaran: newTps,
-                                cp: item.cp || prev.cp,
-                                elemen: item.elemen || prev.elemen,
-                                materi: item.topik || prev.materi,
+                                cp: newCps || prev.cp,
+                                elemen: newElemen || prev.elemen,
+                                materi: newMateris || prev.materi,
                                 alokasiWaktu: item.alokasiWaktu ? `${item.alokasiWaktu} JP` : prev.alokasiWaktu,
-                                kelas: prosemData?.kelas || prev.kelas,
+                                kelas: form.kelas,
+                                semester: form.semester
                               };
                               const htmlSummary = buildRppHtmlSummary(updated, profile);
                               updated.fullContentHtml = htmlSummary;
                               setEditorHtml(htmlSummary);
                               return updated;
                             });
-                            setMsg(isSelected ? "Removed TP from RPP." : "✅ Integrasi PROSEM Berhasil! Identitas, TP, CP & Elemen telah diperbarui.");
-                            setTimeout(() => setMsg(""), 3500);
+                            setMsg(isSelected ? "TP dihapus dari RPP." : "✅ TP berhasil ditambahkan dari Program Semester!");
+                            setTimeout(() => setMsg(""), 3000);
                           }}
                           className={`text-left text-[11px] p-2.5 rounded-lg border transition font-medium flex justify-between items-start gap-2 shadow-xs cursor-pointer ${
                             isSelected 
@@ -1215,6 +1348,11 @@ export default function RppPanel({
                         >
                           <span className="flex-1 flex flex-col min-w-0">
                             <span className="font-bold text-slate-800 text-[11px] flex items-center gap-1.5 flex-wrap">
+                              {isSelected ? (
+                                <CheckSquare className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                              ) : (
+                                <Square className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                              )}
                               {item.topik && <span className="bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider">{item.topik}</span>}
                               {item.elemen && <span className="text-slate-500 font-semibold">[{item.elemen}]</span>}
                               {item.alokasiWaktu && <span className="text-slate-400 text-[10px] font-normal">({item.alokasiWaktu} JP)</span>}
@@ -1224,21 +1362,18 @@ export default function RppPanel({
                           <span className={`text-[8px] px-1.5 py-0.5 rounded shrink-0 font-bold uppercase self-center ${
                             isSelected ? "bg-emerald-200 text-emerald-900" : "bg-emerald-100 text-emerald-800"
                           }`}>
-                            {isSelected ? "TERPILIH" : "PILIH PROSEM"}
+                            {isSelected ? "TERPILIH" : "PILIH TP"}
                           </span>
                         </button>
                       );
                     })}
                   </div>
                 </div>
-              )}
-
-              {/* TP/ATP Alignment helper */}
-              {filteredAtps.length > 0 ? (
-                <div className="p-3.5 bg-[#F0F4F8] border border-blue-200/80 rounded-xl space-y-2">
+              ) : filteredAtps.length > 0 ? (
+                <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
                   <div className="flex justify-between items-center">
-                    <span className="text-[10px] font-bold text-[#005A9E] uppercase tracking-wider flex items-center gap-1.5">
-                      <Sparkles className="w-3.5 h-3.5" />
+                    <span className="text-[10px] font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-blue-600" />
                       Gunakan TP dari Alur Tujuan Pembelajaran (ATP)
                     </span>
                     <span className="text-[9px] font-bold text-slate-500 bg-slate-200/70 px-2 py-0.5 rounded-full">
@@ -1247,7 +1382,7 @@ export default function RppPanel({
                   </div>
                   <div className="flex flex-col gap-1.5 max-h-36 overflow-y-auto pr-1">
                     {filteredAtps.map((atp, idx) => {
-                      const isSelected = form.tujuanPembelajaran ? form.tujuanPembelajaran.includes(atp.tujuanPembelajaran) : false;
+                      const isSelected = form.tujuanPembelajaran ? form.tujuanPembelajaran.includes(atp.tujuanPembelajaran.trim()) : false;
                       return (
                         <button
                           key={atp.tpId || `atp-${idx}`}
@@ -1262,23 +1397,7 @@ export default function RppPanel({
                               if (isSelected) {
                                 const lines = newTps.split('\n').map(l => l.replace(/^-\s*/, '').trim());
                                 const filteredLines = lines.filter(l => l !== atp.tujuanPembelajaran.trim() && l !== "");
-                                if (filteredLines.length === 0) {
-                                  const updated = {
-                                    ...prev,
-                                    tujuanPembelajaran: "",
-                                    cp: "",
-                                    elemen: "",
-                                    kearifanLokal: "",
-                                    glosarium: "",
-                                    kesiapanPesertaDidik: ""
-                                  };
-                                  const htmlSummary = buildRppHtmlSummary(updated, profile);
-                                  updated.fullContentHtml = htmlSummary;
-                                  setEditorHtml(htmlSummary);
-                                  return updated;
-                                } else {
-                                  newTps = filteredLines.map(l => `- ${l}`).join('\n');
-                                }
+                                newTps = filteredLines.length > 0 ? filteredLines.map(l => `- ${l}`).join('\n') : "";
                               } else {
                                 const cleanTp = atp.tujuanPembelajaran.trim();
                                 if (newTps) {
@@ -1325,16 +1444,16 @@ export default function RppPanel({
                               const updated = {
                                 ...prev,
                                 tujuanPembelajaran: newTps,
-                                cp: newCps,
-                                elemen: newElemen,
-                                materi: newMateris
+                                cp: newCps || prev.cp,
+                                elemen: newElemen || prev.elemen,
+                                materi: newMateris || prev.materi
                               };
                               const htmlSummary = buildRppHtmlSummary(updated, profile);
                               updated.fullContentHtml = htmlSummary;
                               setEditorHtml(htmlSummary);
                               return updated;
                             });
-                            setMsg(isSelected ? "🗑️ ATP dihapus!" : "✅ ATP berhasil ditambahkan!");
+                            setMsg(isSelected ? "ATP dihapus!" : "✅ ATP berhasil ditambahkan!");
                             setTimeout(() => setMsg(""), 3000);
                           }}
                           className={`text-left text-[11px] p-2 rounded-lg border transition font-medium flex justify-between items-center shadow-xs ${
@@ -1366,7 +1485,7 @@ export default function RppPanel({
               ) : (
                 <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-[11px] text-slate-500 italic flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 text-slate-400 shrink-0" />
-                  Belum ada Alur Tujuan Pembelajaran (ATP) yang disimpan untuk mata pelajaran {mapel}. Silakan isi di tab ATP terlebih dahulu untuk menyelaraskan otomatis.
+                  Belum ada Tujuan Pembelajaran (TP) pada Program Semester (PROSEM) untuk Kelas {normKelas(form.kelas)} Semester {form.semester}. Silakan isi menu PROSEM terlebih dahulu.
                 </div>
               )}
 
@@ -1476,22 +1595,61 @@ export default function RppPanel({
 
               {/* Kearifan Lokal Box */}
               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/60 space-y-3">
-                <div className="flex justify-between items-center border-b border-slate-200 pb-1.5">
+                <div className="flex justify-between items-center border-b border-slate-200 pb-1.5 flex-wrap gap-1">
                   <h3 className="font-bold text-slate-700 text-xs uppercase tracking-wider flex items-center gap-1">
                     <Sparkles className="w-4 h-4 text-emerald-600" />
                     Kearifan Lokal
                   </h3>
+                  <span className="text-[9px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full">
+                    {tempatKearifanLokal || "Daerah"}
+                  </span>
                 </div>
+
+                {/* Input Tempat / Daerah Kearifan Lokal */}
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">
+                    Tempat / Daerah Kearifan Lokal
+                  </label>
+                  <input
+                    type="text"
+                    value={tempatKearifanLokal}
+                    onChange={(e) => setTempatKearifanLokal(e.target.value)}
+                    placeholder="Contoh: Kab. Ciamis, Bandung, Yogyakarta, Kebumen, Jawa Barat..."
+                    className="w-full p-2 border border-slate-300 rounded-lg text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white"
+                  />
+                </div>
+
+                {/* Tombol Otomatis Generate Kearifan Lokal */}
+                <button
+                  type="button"
+                  onClick={handleGenerateLocalWisdom}
+                  disabled={isGeneratingCiamis}
+                  className="w-full py-2 px-3 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-bold text-[11px] rounded-lg shadow-xs transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                  title="Cari & Generate otomatis kearifan lokal daerah tersebut dari internet via AI"
+                >
+                  {isGeneratingCiamis ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-200" />
+                      <span>Mencari Kearifan Lokal {tempatKearifanLokal}...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Compass className="w-3.5 h-3.5 text-amber-300" />
+                      <span>⚡ Auto Generate Kearifan Lokal ({tempatKearifanLokal || "Daerah"})</span>
+                    </>
+                  )}
+                </button>
+
                 <div>
                   <textarea
                     name="kearifanLokal"
                     value={form.kearifanLokal || ""}
                     onChange={handleInputChange}
-                    placeholder="Contoh: Menggunakan permainan tradisional jamuran, lagu daerah cublak-cublak suweng, cerita rakyat setempat, atau gotong royong..."
-                    className="w-full p-2.5 border border-slate-300 rounded-lg text-xs h-24 focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
+                    placeholder={`Contoh kearifan lokal di ${tempatKearifanLokal || "daerah Anda"}... (Atau klik tombol otomatis di atas untuk generate)`}
+                    className="w-full p-2.5 border border-slate-300 rounded-lg text-xs h-28 focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white"
                   />
                   <p className="text-[10px] text-slate-500 mt-1 leading-normal">
-                    Nilai/kata kearifan lokal di atas akan diintegrasikan secara otomatis ke dalam langkah kegiatan pembelajaran oleh AI.
+                    Nilai kearifan lokal daerah {tempatKearifanLokal || "Anda"} di atas akan diintegrasikan secara otomatis ke dalam langkah kegiatan pembelajaran oleh AI.
                   </p>
                 </div>
               </div>

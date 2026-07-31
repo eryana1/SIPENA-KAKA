@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { generateTujuanPembelajaran, extractCapaianPembelajaranOnly, generateTpFromElements } from "../lib/ai";
 import { generateTPDocx } from "../lib/docxGenerator";
+import { downloadBlob } from "../lib/downloadHelper";
 import { uploadFileToDrive } from "../lib/drive";
 import { Jenjang, Fase, TPItem, TPData } from "../types";
 
@@ -60,11 +61,10 @@ export default function TpPanel({ profile, tpData, onSaveTp, onLoadTp, apiKey, d
   const [msg, setMsg] = useState("");
 
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState({ elemen: "", cp: "", kompetensi: "", konten: "", tujuanPembelajaran: "" });
+  const [editForm, setEditForm] = useState({ elemen: "", cp: "", kompetensi: "", konten: "", tujuanPembelajaran: "", materi: "", glosarium: "" });
 
   const [manualAdd, setManualAdd] = useState(false);
-  const [manualForm, setManualForm] = useState({ elemen: "", cp: "", kompetensi: "", konten: "", tujuanPembelajaran: "" });
-  const [viewMode, setViewMode] = useState<"column" | "grouped">("column");
+  const [manualForm, setManualForm] = useState({ elemen: "", cp: "", kompetensi: "", konten: "", tujuanPembelajaran: "", materi: "", glosarium: "" });
 
   // Mapel presets based on Jenjang
   const mapelPresets: { [key in Jenjang]: string[] } = {
@@ -310,7 +310,9 @@ export default function TpPanel({ profile, tpData, onSaveTp, onLoadTp, apiKey, d
       }));
 
       // Append items instead of overwriting!
-      setItems(prev => [...prev, ...formattedItems]);
+      const mergedItems = [...items, ...formattedItems];
+      setItems(mergedItems);
+      autoPersist(mergedItems, newCpText);
       if (uploadedFile) {
         setMsg(`✅ Capaian Pembelajaran (CP) berhasil diidentifikasi dari berkas "${uploadedFile.name}" untuk mapel ${mapel} Fase ${fase}, dan Tujuan Pembelajaran (TP) berhasil diformulasikan!`);
       } else {
@@ -323,25 +325,51 @@ export default function TpPanel({ profile, tpData, onSaveTp, onLoadTp, apiKey, d
     }
   };
 
+  const autoPersist = (updatedItems: TPItem[], updatedCp = cp, updatedElements = extractedElements) => {
+    const payload: TPData = {
+      jenjang,
+      fase,
+      mapel,
+      capaianPembelajaran: updatedCp,
+      items: updatedItems,
+      createdAt: new Date().toISOString(),
+      kelas,
+      tahunPelajaran: profile.tahunPelajaran,
+      semester: profile.semester,
+      extractedElements: updatedElements
+    } as any;
+    onSaveTp(payload).catch(err => console.warn("Auto-save TP failed:", err));
+  };
+
   const handleEditStart = (item: TPItem) => {
     setEditingId(item.id);
     setEditForm({
       elemen: item.elemen || "",
       cp: item.cp || "",
-      kompetensi: item.kompetensi,
-      konten: item.konten,
-      tujuanPembelajaran: item.tujuanPembelajaran
+      kompetensi: item.kompetensi || "",
+      konten: item.konten || "",
+      tujuanPembelajaran: item.tujuanPembelajaran || "",
+      materi: item.materi || item.konten || "",
+      glosarium: item.glosarium || ""
     });
   };
 
   const handleEditSave = (id: string) => {
-    setItems(prev => prev.map(item => item.id === id ? { ...item, ...editForm } : item));
+    const defaultGlosarium = (editForm.glosarium && editForm.glosarium.trim() !== "" && editForm.glosarium.trim() !== "-")
+      ? editForm.glosarium
+      : `${editForm.konten || editForm.materi || editForm.kompetensi || editForm.elemen || "Materi"}: Istilah dan konsep penting terkait ${editForm.tujuanPembelajaran}.`;
+
+    const updated = items.map(item => item.id === id ? { ...item, ...editForm, glosarium: defaultGlosarium } : item);
+    setItems(updated);
+    autoPersist(updated);
     setEditingId(null);
     setMsg("💡 Tujuan Pembelajaran berhasil diubah.");
   };
 
   const handleDelete = (id: string) => {
-    setItems(prev => prev.filter(item => item.id !== id));
+    const updated = items.filter(item => item.id !== id);
+    setItems(updated);
+    autoPersist(updated);
     setMsg("💡 Tujuan Pembelajaran berhasil dihapus dari daftar.");
   };
 
@@ -351,13 +379,19 @@ export default function TpPanel({ profile, tpData, onSaveTp, onLoadTp, apiKey, d
       cp: cp || "",
       kompetensi: "",
       konten: "",
-      tujuanPembelajaran: ""
+      tujuanPembelajaran: "",
+      materi: "",
+      glosarium: ""
     });
     setManualAdd(true);
   };
 
   const handleManualAdd = () => {
     if (!manualForm.tujuanPembelajaran) return;
+    const defaultGlosarium = (manualForm.glosarium && manualForm.glosarium.trim() !== "" && manualForm.glosarium.trim() !== "-")
+      ? manualForm.glosarium
+      : `${manualForm.konten || manualForm.materi || manualForm.kompetensi || manualForm.elemen || "Materi"}: Istilah dan konsep penting terkait ${manualForm.tujuanPembelajaran}.`;
+
     const newItem: TPItem = {
       id: `tp-${Date.now()}-manual-${Math.random().toString(36).substr(2, 5)}`,
       mapel: mapel,
@@ -366,12 +400,16 @@ export default function TpPanel({ profile, tpData, onSaveTp, onLoadTp, apiKey, d
       kompetensi: manualForm.kompetensi || "Umum",
       konten: manualForm.konten || "Umum",
       tujuanPembelajaran: manualForm.tujuanPembelajaran,
+      materi: manualForm.materi || manualForm.konten || "Umum",
+      glosarium: defaultGlosarium,
       checked: true,
       kelas: kelas
     };
-    setItems(prev => [...prev, newItem]);
+    const updated = [...items, newItem];
+    setItems(updated);
+    autoPersist(updated);
     setManualAdd(false);
-    setManualForm({ elemen: "", cp: "", kompetensi: "", konten: "", tujuanPembelajaran: "" });
+    setManualForm({ elemen: "", cp: "", kompetensi: "", konten: "", tujuanPembelajaran: "", materi: "", glosarium: "" });
     setMsg("💡 Tujuan Pembelajaran manual berhasil ditambahkan.");
   };
 
@@ -426,8 +464,7 @@ export default function TpPanel({ profile, tpData, onSaveTp, onLoadTp, apiKey, d
       const blob = await generateTPDocx(profile, mapel, activeItems, kelas);
       const filename = `Tujuan Pembelajaran_${mapel}.docx`;
       
-      const fileSaver = await import("file-saver");
-      fileSaver.saveAs(blob, filename);
+      downloadBlob(blob, filename);
       setMsg("✅ File Microsoft Word (.docx) berhasil dibuat dan diunduh!");
     } catch (error: any) {
       setMsg(`🔴 Gagal mengunduh berkas Word: ${error.message}`);
@@ -663,38 +700,12 @@ export default function TpPanel({ profile, tpData, onSaveTp, onLoadTp, apiKey, d
           <div className="space-y-4">
             <div className="flex flex-wrap justify-between items-center gap-3">
               <div className="flex items-center gap-2">
-                <h3 className="font-bold text-slate-800 text-sm uppercase tracking-wide">Daftar Rumusan Tujuan Pembelajaran (TP)</h3>
-                <span className="text-[10px] font-bold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full">
-                  Format Per Kolom
-                </span>
+                <h3 className="font-bold text-slate-800 text-sm uppercase tracking-wide">
+                  Daftar Rumusan Tujuan Pembelajaran (TP) - {mapel} (Fase {fase})
+                </h3>
               </div>
 
               <div className="flex items-center gap-2">
-                <div className="bg-slate-100 p-1 rounded-lg border border-slate-200 flex gap-1 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => setViewMode("column")}
-                    className={`px-3 py-1 rounded-md font-semibold text-[11px] transition cursor-pointer ${
-                      viewMode === "column" 
-                        ? "bg-white text-blue-700 shadow-xs border border-slate-200/80 font-bold" 
-                        : "text-slate-600 hover:text-slate-900"
-                    }`}
-                  >
-                    📊 Matriks Per Kolom
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setViewMode("grouped")}
-                    className={`px-3 py-1 rounded-md font-semibold text-[11px] transition cursor-pointer ${
-                      viewMode === "grouped" 
-                        ? "bg-white text-blue-700 shadow-xs border border-slate-200/80 font-bold" 
-                        : "text-slate-600 hover:text-slate-900"
-                    }`}
-                  >
-                    📁 Tampilan Terkelompok
-                  </button>
-                </div>
-
                 <button
                   onClick={handleOpenManualAdd}
                   className="flex items-center gap-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold py-1.5 px-3 rounded-lg text-xs transition border border-slate-200 cursor-pointer"
@@ -732,7 +743,16 @@ export default function TpPanel({ profile, tpData, onSaveTp, onLoadTp, apiKey, d
                       />
                     </div>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Rumusan Tujuan Pembelajaran (TP)</label>
+                    <textarea
+                      placeholder="Deskripsi Tujuan Pembelajaran (TP)"
+                      value={manualForm.tujuanPembelajaran}
+                      onChange={(e) => setManualForm(prev => ({ ...prev, tujuanPembelajaran: e.target.value }))}
+                      className="w-full p-2 border border-slate-300 rounded bg-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 h-16"
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Kompetensi</label>
                       <input
@@ -744,22 +764,12 @@ export default function TpPanel({ profile, tpData, onSaveTp, onLoadTp, apiKey, d
                       />
                     </div>
                     <div>
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Konten / Lingkup Materi</label>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Konten / Ruang Lingkup</label>
                       <input
                         type="text"
                         placeholder="Konten (misal: Simbol dan Sila Pancasila)"
                         value={manualForm.konten}
                         onChange={(e) => setManualForm(prev => ({ ...prev, konten: e.target.value }))}
-                        className="w-full p-2 border border-slate-300 rounded bg-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Rumusan Tujuan Pembelajaran (TP)</label>
-                      <input
-                        type="text"
-                        placeholder="Deskripsi Tujuan Pembelajaran (TP)"
-                        value={manualForm.tujuanPembelajaran}
-                        onChange={(e) => setManualForm(prev => ({ ...prev, tujuanPembelajaran: e.target.value }))}
                         className="w-full p-2 border border-slate-300 rounded bg-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
                       />
                     </div>
@@ -784,398 +794,210 @@ export default function TpPanel({ profile, tpData, onSaveTp, onLoadTp, apiKey, d
 
             {/* List */}
             <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs bg-white">
-              {viewMode === "column" ? (
-                /* PER-COLUMN MATRIX VIEW */
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm border-collapse min-w-[850px]">
-                    <thead>
-                      <tr className="bg-slate-100 border-b border-slate-200 font-bold text-slate-700 uppercase text-xs">
-                        <th className="p-3 w-10 text-center border-r border-slate-200">No</th>
-                        <th className="p-3 w-36 border-r border-slate-200">Elemen</th>
-                        <th className="p-3 w-64 border-r border-slate-200">Capaian Pembelajaran (CP)</th>
-                        <th className="p-3 w-36 border-r border-slate-200">Kompetensi</th>
-                        <th className="p-3 w-40 border-r border-slate-200">Konten / Materi</th>
-                        <th className="p-3 border-r border-slate-200">Rumusan Tujuan Pembelajaran (TP)</th>
-                        <th className="p-3 w-20 text-center">Aksi</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-200 text-xs">
-                      {(() => {
-                        const groupedItems: { [key: string]: { elemen: string; cp: string; items: typeof displayedItems } } = {};
-                        displayedItems.forEach(item => {
-                          const key = item.elemen || "Umum";
-                          if (!groupedItems[key]) {
-                            groupedItems[key] = {
-                              elemen: item.elemen || "Umum",
-                              cp: item.cp || "",
-                              items: []
-                            };
-                          }
-                          groupedItems[key].items.push(item);
-                        });
-
-                        const groupedList = Object.values(groupedItems);
-
-                        if (groupedList.length === 0) {
-                          return (
-                            <tr>
-                              <td colSpan={7} className="p-8 text-center text-slate-400 font-medium">
-                                Belum ada data Tujuan Pembelajaran (TP). Silakan gunakan tombol di atas untuk memformulasikan secara otomatis atau menambahkan secara manual.
-                              </td>
-                            </tr>
-                          );
-                        }
-
-                        return groupedList.map((group, groupIndex) => {
-                          return group.items.map((tpItem, tpIdx) => {
-                            const isFirst = tpIdx === 0;
-                            const isEditing = editingId === tpItem.id;
-
-                            return (
-                              <tr key={tpItem.id} className="hover:bg-slate-50/50 transition align-top">
-                                {isFirst && (
-                                  <>
-                                    <td rowSpan={group.items.length} className="p-3 text-center font-bold text-slate-500 border-r border-slate-200 bg-slate-50/40 align-top">
-                                      {groupIndex + 1}
-                                    </td>
-                                    <td rowSpan={group.items.length} className="p-3 font-bold text-blue-700 border-r border-slate-200 bg-blue-50/20 align-top">
-                                      <div className="space-y-2">
-                                        <span className="inline-block bg-blue-100 text-blue-800 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-200 uppercase tracking-wider">
-                                          {group.elemen}
-                                        </span>
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setManualForm({
-                                              elemen: group.elemen,
-                                              cp: group.cp,
-                                              kompetensi: "",
-                                              konten: "",
-                                              tujuanPembelajaran: ""
-                                            });
-                                            setManualAdd(true);
-                                          }}
-                                          className="flex items-center gap-1 text-[10px] text-blue-600 hover:text-blue-800 font-semibold cursor-pointer block mt-1"
-                                        >
-                                          <Plus className="w-3 h-3" /> Tambah TP
-                                        </button>
-                                      </div>
-                                    </td>
-                                    <td rowSpan={group.items.length} className="p-3 text-slate-600 text-[11px] leading-relaxed border-r border-slate-200 bg-slate-50/10 align-top">
-                                      <div className="max-h-56 overflow-y-auto pr-1 whitespace-pre-line">
-                                        {group.cp || "-"}
-                                      </div>
-                                    </td>
-                                  </>
-                                )}
-
-                                {/* Column 4: Kompetensi */}
-                                <td className="p-3 border-r border-slate-200 text-slate-700 font-medium text-xs align-top">
-                                  {isEditing ? (
-                                    <input
-                                      type="text"
-                                      value={editForm.kompetensi}
-                                      onChange={(e) => setEditForm(p => ({ ...p, kompetensi: e.target.value }))}
-                                      className="p-1.5 border border-slate-300 rounded w-full bg-white text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                      placeholder="Kompetensi"
-                                    />
-                                  ) : (
-                                    <span className="bg-sky-50 text-sky-800 px-2 py-1 rounded border border-sky-200 font-semibold inline-block text-[10.5px]">
-                                      {tpItem.kompetensi || "-"}
-                                    </span>
-                                  )}
-                                </td>
-
-                                {/* Column 5: Konten */}
-                                <td className="p-3 border-r border-slate-200 text-slate-700 font-medium text-xs align-top">
-                                  {isEditing ? (
-                                    <input
-                                      type="text"
-                                      value={editForm.konten}
-                                      onChange={(e) => setEditForm(p => ({ ...p, konten: e.target.value }))}
-                                      className="p-1.5 border border-slate-300 rounded w-full bg-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                      placeholder="Konten / Lingkup Materi"
-                                    />
-                                  ) : (
-                                    <span className="bg-indigo-50 text-indigo-800 px-2 py-1 rounded border border-indigo-200 font-medium inline-block text-[10.5px]">
-                                      {tpItem.konten || "-"}
-                                    </span>
-                                  )}
-                                </td>
-
-                                {/* Column 6: Rumusan TP */}
-                                <td className="p-3 border-r border-slate-200 text-slate-800 text-xs leading-relaxed font-medium align-top">
-                                  {isEditing ? (
-                                    <textarea
-                                      value={editForm.tujuanPembelajaran}
-                                      onChange={(e) => setEditForm(p => ({ ...p, tujuanPembelajaran: e.target.value }))}
-                                      className="p-1.5 border border-slate-300 rounded w-full bg-white text-xs h-20 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                    />
-                                  ) : (
-                                    <div className="flex gap-1.5">
-                                      <span className="font-bold text-blue-600 shrink-0">{tpIdx + 1}.</span>
-                                      <span>{tpItem.tujuanPembelajaran}</span>
-                                    </div>
-                                  )}
-                                </td>
-
-                                {/* Column 7: Aksi */}
-                                <td className="p-3 text-center align-top">
-                                  {isEditing ? (
-                                    <div className="flex flex-col gap-1 items-center">
-                                      <button
-                                        type="button"
-                                        onClick={() => handleEditSave(tpItem.id)}
-                                        className="p-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[10px] font-bold w-full shadow-xs cursor-pointer"
-                                      >
-                                        Simpan
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => setEditingId(null)}
-                                        className="p-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded text-[10px] w-full cursor-pointer"
-                                      >
-                                        Batal
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    <div className="flex items-center justify-center gap-1">
-                                      <button
-                                        type="button"
-                                        onClick={() => handleEditStart(tpItem)}
-                                        className="text-blue-500 hover:text-blue-700 p-1 rounded hover:bg-blue-50 transition cursor-pointer"
-                                        title="Edit TP"
-                                      >
-                                        <Edit3 className="w-3.5 h-3.5" />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleDelete(tpItem.id)}
-                                        className="text-red-500 hover:text-red-700 p-1 rounded hover:bg-red-50 transition cursor-pointer"
-                                        title="Hapus TP"
-                                      >
-                                        <Trash2 className="w-3.5 h-3.5" />
-                                      </button>
-                                    </div>
-                                  )}
-                                </td>
-                              </tr>
-                            );
-                          });
-                        });
-                      })()}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                /* GROUPED VIEW */
-                <table className="w-full text-left text-sm border-collapse">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm border-collapse min-w-[750px]">
                   <thead>
                     <tr className="bg-slate-100 border-b border-slate-200 font-bold text-slate-700 uppercase text-xs">
-                      <th className="p-3 w-12 text-center">No</th>
-                      <th className="p-3 w-80">Elemen &amp; Capaian Pembelajaran (CP)</th>
-                      <th className="p-3">Daftar Rincian Tujuan Pembelajaran (TP)</th>
-                      <th className="p-3 w-36 text-center">Aksi Elemen</th>
+                      <th className="p-3 w-10 text-center border-r border-slate-200">No</th>
+                      <th className="p-3 w-36 border-r border-slate-200">Elemen</th>
+                      <th className="p-3 w-64 border-r border-slate-200">Capaian Pembelajaran (CP)</th>
+                      <th className="p-3 border-r border-slate-200 min-w-[280px]">Tujuan Pembelajaran (TP)</th>
+                      <th className="p-3 w-20 text-center">Aksi</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200 text-xs">
                     {(() => {
-                      const groupedItems: { [key: string]: { elemen: string; cp: string; items: typeof displayedItems } } = {};
-                      displayedItems.forEach(item => {
-                        const key = item.elemen || "Umum";
-                        if (!groupedItems[key]) {
-                          groupedItems[key] = {
-                            elemen: item.elemen || "Umum",
-                            cp: item.cp || "",
-                            items: []
-                          };
-                        }
-                        groupedItems[key].items.push(item);
-                      });
-
-                      const groupedList = Object.values(groupedItems);
-
-                      if (groupedList.length === 0) {
+                      if (displayedItems.length === 0) {
                         return (
                           <tr>
-                            <td colSpan={4} className="p-8 text-center text-slate-400 font-medium">
-                              Belum ada data Tujuan Pembelajaran (TP). Silakan gunakan tombol di atas untuk memformulasikan secara otomatis atau menambahkan secara manual.
+                            <td colSpan={5} className="p-8 text-center text-slate-400 font-medium">
+                              Belum ada data Tujuan Pembelajaran (TP) untuk mata pelajaran {mapel}. Silakan gunakan tombol di atas untuk memformulasikan secara otomatis atau menambahkan secara manual.
                             </td>
                           </tr>
                         );
                       }
 
-                      return groupedList.map((group, groupIndex) => {
+                      let prevElemen = "";
+                      let prevCp = "";
+                      let tpGroupIndex = 0;
+
+                      return displayedItems.map((tpItem, tpIdx) => {
+                        const currentElemen = tpItem.elemen || "Umum";
+                        const currentCp = tpItem.cp || "-";
+                        const isSameGroup = tpIdx > 0 && currentElemen === prevElemen && currentCp === prevCp;
+
+                        if (isSameGroup) {
+                          tpGroupIndex += 1;
+                        } else {
+                          tpGroupIndex = 1;
+                          prevElemen = currentElemen;
+                          prevCp = currentCp;
+                        }
+
+                        const currentTpNumber = tpGroupIndex;
+                        const isEditing = editingId === tpItem.id;
+
                         return (
-                          <tr key={group.elemen} className="hover:bg-slate-50/30 transition align-top">
-                            <td className="p-3 text-center font-medium text-slate-500 border-r border-slate-100">{groupIndex + 1}</td>
-                            
-                            <td className="p-3 border-r border-slate-100">
-                              <div className="space-y-2">
-                                <span className="inline-block bg-blue-50 text-blue-700 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-100 uppercase tracking-wider">
-                                  {group.elemen}
-                                </span>
-                                <div className="text-slate-600 font-medium text-[11px] leading-relaxed whitespace-pre-line max-h-48 overflow-y-auto pr-1">
-                                  {group.cp || "-"}
-                                </div>
-                              </div>
+                          <tr key={tpItem.id} className="hover:bg-slate-50/50 transition align-top">
+                            {/* Column 1: No */}
+                            <td className="p-3 text-center font-bold text-slate-500 border-r border-slate-200 bg-slate-50/40 align-top">
+                              {tpIdx + 1}
                             </td>
 
-                            <td className="p-3 border-r border-slate-100">
-                              <div className="space-y-3">
-                                {group.items.map((tpItem, tpIdx) => {
-                                  const isEditing = editingId === tpItem.id;
-                                  if (isEditing) {
-                                    return (
-                                      <div key={tpItem.id} className="p-3 bg-white rounded-lg border-2 border-blue-400 space-y-3 shadow-sm text-left">
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                          <div>
-                                            <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider">Elemen</label>
-                                            <input
-                                              type="text"
-                                              value={editForm.elemen}
-                                              onChange={(e) => setEditForm(p => ({ ...p, elemen: e.target.value }))}
-                                              className="p-1.5 border rounded w-full bg-white text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                              placeholder="Nama Elemen"
-                                            />
-                                          </div>
-                                          <div>
-                                            <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider">Deskripsi CP</label>
-                                            <textarea
-                                              value={editForm.cp}
-                                              onChange={(e) => setEditForm(p => ({ ...p, cp: e.target.value }))}
-                                              className="p-1.5 border rounded w-full bg-white text-xs h-10 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                              placeholder="Capaian Pembelajaran"
-                                            />
-                                          </div>
-                                        </div>
-                                        
-                                        <div>
-                                          <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider">Rumusan Tujuan Pembelajaran (TP)</label>
-                                          <textarea
-                                            value={editForm.tujuanPembelajaran}
-                                            onChange={(e) => setEditForm(p => ({ ...p, tujuanPembelajaran: e.target.value }))}
-                                            className="p-1.5 border rounded w-full bg-white text-xs h-16 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                          />
-                                        </div>
-                                        
-                                        <div className="grid grid-cols-2 gap-3">
-                                          <div>
-                                            <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider">Kompetensi</label>
-                                            <input
-                                              type="text"
-                                              value={editForm.kompetensi}
-                                              onChange={(e) => setEditForm(p => ({ ...p, kompetensi: e.target.value }))}
-                                              className="p-1.5 border rounded w-full bg-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                            />
-                                          </div>
-                                          <div>
-                                            <label className="block text-[9px] font-bold text-slate-400 uppercase tracking-wider">Konten</label>
-                                            <input
-                                              type="text"
-                                              value={editForm.konten}
-                                              onChange={(e) => setEditForm(p => ({ ...p, konten: e.target.value }))}
-                                              className="p-1.5 border rounded w-full bg-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                            />
-                                          </div>
-                                        </div>
-                                        
-                                        <div className="flex justify-end gap-2 pt-1.5 border-t border-slate-100">
-                                          <button
-                                            onClick={() => setEditingId(null)}
-                                            className="px-3 py-1 text-[10px] text-slate-500 hover:text-slate-700 font-semibold cursor-pointer"
-                                          >
-                                            Batal
-                                          </button>
-                                          <button
-                                            onClick={() => handleEditSave(tpItem.id)}
-                                            className="px-4 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold rounded flex items-center gap-1 shadow-sm cursor-pointer"
-                                          >
-                                            <Check className="w-3 h-3" />
-                                            Simpan
-                                          </button>
-                                        </div>
-                                      </div>
-                                    );
-                                  }
+                            {/* Column 2: Elemen */}
+                            <td className="p-3 font-bold text-blue-700 border-r border-slate-200 bg-blue-50/20 align-top">
+                              {isEditing ? (
+                                <div>
+                                  <label className="block text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">Elemen</label>
+                                  <input
+                                    type="text"
+                                    value={editForm.elemen}
+                                    onChange={(e) => setEditForm(p => ({ ...p, elemen: e.target.value }))}
+                                    className="p-1.5 border border-slate-300 rounded w-full bg-white text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                    placeholder="Elemen"
+                                  />
+                                </div>
+                              ) : isSameGroup ? null : (
+                                <span className="inline-block bg-blue-100 text-blue-800 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-200 uppercase tracking-wider">
+                                  {currentElemen}
+                                </span>
+                              )}
+                            </td>
 
-                                  return (
-                                    <div key={tpItem.id} className="p-3 bg-slate-50 rounded-lg border border-slate-200/60 flex justify-between items-start gap-4 hover:border-slate-300 hover:bg-slate-100/40 transition text-left">
-                                      <div className="space-y-1.5 flex-1">
-                                        <div className="font-semibold text-slate-800 text-[11px] leading-relaxed">
-                                          {tpIdx + 1}. {tpItem.tujuanPembelajaran}
-                                        </div>
-                                        <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500 bg-white/60 py-1 px-2 rounded border border-slate-100 inline-block">
-                                          <span><strong>Kompetensi:</strong> <span className="text-slate-700 font-medium">{tpItem.kompetensi}</span></span>
-                                          <span className="text-slate-300">|</span>
-                                          <span><strong>Konten:</strong> <span className="text-slate-700 font-medium">{tpItem.konten}</span></span>
-                                        </div>
+                            {/* Column 3: Capaian Pembelajaran (CP) */}
+                            <td className="p-3 text-slate-600 text-[11px] leading-relaxed border-r border-slate-200 bg-slate-50/10 align-top">
+                              {isEditing ? (
+                                <div>
+                                  <label className="block text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">CP</label>
+                                  <textarea
+                                    value={editForm.cp}
+                                    onChange={(e) => setEditForm(p => ({ ...p, cp: e.target.value }))}
+                                    className="p-1.5 border border-slate-300 rounded w-full bg-white text-xs h-24 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                    placeholder="Capaian Pembelajaran"
+                                  />
+                                </div>
+                              ) : isSameGroup ? null : (
+                                <div className="max-h-56 overflow-y-auto pr-1 whitespace-pre-line">
+                                  {currentCp}
+                                </div>
+                              )}
+                            </td>
+
+                              {/* Single Column for Tujuan Pembelajaran (TP) with stacked details (Kompetensi & Konten) */}
+                              <td className="p-3 border-r border-slate-200 text-slate-800 text-xs leading-relaxed font-medium align-top">
+                                {isEditing ? (
+                                  <div className="space-y-2 p-2 bg-blue-50/50 rounded-lg border border-blue-200">
+                                    <div>
+                                      <label className="block text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">Rumusan TP</label>
+                                      <textarea
+                                        value={editForm.tujuanPembelajaran}
+                                        onChange={(e) => setEditForm(p => ({ ...p, tujuanPembelajaran: e.target.value }))}
+                                        className="p-1.5 border border-slate-300 rounded w-full bg-white text-xs h-16 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                      />
+                                    </div>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                      <div>
+                                        <label className="block text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">Kompetensi</label>
+                                        <input
+                                          type="text"
+                                          value={editForm.kompetensi}
+                                          onChange={(e) => setEditForm(p => ({ ...p, kompetensi: e.target.value }))}
+                                          className="p-1.5 border border-slate-300 rounded w-full bg-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                          placeholder="Kompetensi"
+                                        />
                                       </div>
-                                      
-                                      <div className="flex items-center gap-1.5 shrink-0">
-                                        <button
-                                          onClick={() => handleEditStart(tpItem)}
-                                          className="text-blue-500 hover:text-blue-700 p-1 rounded hover:bg-white border border-transparent hover:border-slate-200 transition cursor-pointer"
-                                          title="Edit TP"
-                                        >
-                                          <Edit3 className="w-3.5 h-3.5" />
-                                        </button>
-                                        <button
-                                          onClick={() => handleDelete(tpItem.id)}
-                                          className="text-red-500 hover:text-red-700 p-1 rounded hover:bg-white border border-transparent hover:border-slate-200 transition cursor-pointer"
-                                          title="Hapus TP"
-                                        >
-                                          <Trash2 className="w-3.5 h-3.5" />
-                                        </button>
+                                      <div>
+                                        <label className="block text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">Konten</label>
+                                        <input
+                                          type="text"
+                                          value={editForm.konten}
+                                          onChange={(e) => setEditForm(p => ({ ...p, konten: e.target.value }))}
+                                          className="p-1.5 border border-slate-300 rounded w-full bg-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                          placeholder="Konten"
+                                        />
                                       </div>
                                     </div>
-                                  );
-                                })}
-                              </div>
-                            </td>
+                                  </div>
+                                ) : (
+                                  <div className="space-y-1.5 py-0.5">
+                                    {/* Baris 1: Rumusan TP */}
+                                    <div className="flex gap-1.5 font-semibold text-slate-800">
+                                      <span className="font-bold text-blue-600 shrink-0">{currentTpNumber}.</span>
+                                      <span className="leading-relaxed">{tpItem.tujuanPembelajaran}</span>
+                                    </div>
 
-                            <td className="p-3 text-center align-middle">
-                              <div className="flex flex-col gap-2 items-center justify-center">
-                                <button
-                                  onClick={() => {
-                                    setManualForm({
-                                      elemen: group.elemen,
-                                      cp: group.cp,
-                                      kompetensi: "",
-                                      konten: "",
-                                      tujuanPembelajaran: ""
-                                    });
-                                    setManualAdd(true);
-                                  }}
-                                  className="flex items-center justify-center gap-1 bg-white hover:bg-blue-50 text-blue-600 border border-blue-200 hover:border-blue-300 font-semibold py-1.5 px-2 rounded text-[10px] transition shadow-xs w-full"
-                                  title="Tambah TP ke Elemen Ini"
-                                >
-                                  <Plus className="w-3 h-3" />
-                                  Tambah TP
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    if (confirm(`Apakah Anda yakin ingin menghapus seluruh elemen "${group.elemen}" beserta semua Tujuan Pembelajaran di dalamnya?`)) {
-                                      const idsToDelete = group.items.map(it => it.id);
-                                      setItems(prev => prev.filter(item => !idsToDelete.includes(item.id)));
-                                      setMsg(`💡 Elemen "${group.elemen}" dan seluruh Tujuan Pembelajaran di dalamnya berhasil dihapus.`);
-                                    }
-                                  }}
-                                  className="flex items-center justify-center gap-1 bg-white hover:bg-red-50 text-red-500 border border-red-100 hover:border-red-200 font-semibold py-1.5 px-2 rounded text-[10px] transition shadow-xs w-full"
-                                  title="Hapus Elemen Ini"
-                                >
-                                  <Trash2 className="w-3 h-3" />
-                                  Hapus Elemen
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      });
-                    })()}
+                                    {/* Baris 2: Kompetensi & Konten di gabung 1 baris */}
+                                    {(tpItem.kompetensi || tpItem.konten) && (
+                                      <div className="flex flex-wrap items-center gap-3 pl-5 text-[11px] pt-1 border-t border-slate-100">
+                                        {tpItem.kompetensi && (
+                                          <div className="flex items-center gap-1 text-slate-700">
+                                            <span className="font-bold text-sky-700 shrink-0">• Kompetensi:</span>
+                                            <span className="bg-sky-50 text-sky-900 px-1.5 py-0.5 rounded border border-sky-100 font-medium">
+                                              {tpItem.kompetensi}
+                                            </span>
+                                          </div>
+                                        )}
+                                        {tpItem.konten && (
+                                          <div className="flex items-center gap-1 text-slate-700">
+                                            <span className="font-bold text-indigo-700 shrink-0">• Konten:</span>
+                                            <span className="bg-indigo-50 text-indigo-900 px-1.5 py-0.5 rounded border border-indigo-100 font-medium">
+                                              {tpItem.konten}
+                                            </span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </td>
+
+                              {/* Column: Aksi */}
+                              <td className="p-3 text-center align-top">
+                                {isEditing ? (
+                                  <div className="flex flex-col gap-1 items-center">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleEditSave(tpItem.id)}
+                                      className="p-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[10px] font-bold w-full shadow-xs cursor-pointer"
+                                    >
+                                      Simpan
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditingId(null)}
+                                      className="p-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded text-[10px] w-full cursor-pointer"
+                                    >
+                                      Batal
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center justify-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleEditStart(tpItem)}
+                                      className="text-blue-500 hover:text-blue-700 p-1 rounded hover:bg-blue-50 transition cursor-pointer"
+                                      title="Edit TP"
+                                    >
+                                      <Edit3 className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDelete(tpItem.id)}
+                                      className="text-red-500 hover:text-red-700 p-1 rounded hover:bg-red-50 transition cursor-pointer"
+                                      title="Hapus TP"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        });
+                      })()}
                   </tbody>
                 </table>
-              )}
+              </div>
             </div>
 
             {/* Sync actions */}

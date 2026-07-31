@@ -53,12 +53,12 @@ const getAiInstance = (req: express.Request) => {
 const generateWithRetry = async (
   ai: any,
   params: { contents: any; config?: any },
-  preferredModel: string = "gemini-3.5-flash",
+  preferredModel: string = "gemini-3.6-flash",
   retries = 3,
   delay = 1000
 ) => {
   // Only use valid, non-deprecated models from the gemini-api skill list.
-  const modelsToTry = [preferredModel, "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+  const modelsToTry = [preferredModel, "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
   const uniqueModels = Array.from(new Set(modelsToTry));
   let lastError: any = null;
 
@@ -163,7 +163,7 @@ app.post("/api/check-api-key", async (req, res) => {
     const response = await generateWithRetry(
       ai,
       { contents: "Hello, confirm this API works with 'OK' response" },
-      "gemini-3.5-flash",
+      "gemini-3.6-flash",
       2,
       500
     );
@@ -220,7 +220,7 @@ app.post("/api/generate", async (req, res) => {
     const result = await generateWithRetry(
       ai,
       { contents, config },
-      "gemini-3.5-flash",
+      "gemini-3.6-flash",
       3,
       1000
     );
@@ -231,13 +231,16 @@ app.post("/api/generate", async (req, res) => {
     let errMsg = error.message || "Terjadi kesalahan saat berkomunikasi dengan AI.";
     
     const errorStr = String(errMsg).toLowerCase();
-    if (
+    const isQuotaError = 
       errorStr.includes("resource_exhausted") ||
       errorStr.includes("quota") ||
       errorStr.includes("limit exceeded") ||
-      errorStr.includes("429")
-    ) {
+      errorStr.includes("429");
+
+    if (isQuotaError) {
       errMsg = "Batas kuota penggunaan AI (Free Tier) telah habis atau terlalu cepat mengirim permintaan. Demi kelancaran tanpa hambatan batas kuota, silakan masukkan Kunci API Gemini Anda sendiri di menu 'Dashboard Guru' atau 'Pengaturan' di bagian kanan atas.";
+      res.status(429).json({ error: errMsg });
+      return;
     }
     
     res.status(500).json({ error: errMsg });
